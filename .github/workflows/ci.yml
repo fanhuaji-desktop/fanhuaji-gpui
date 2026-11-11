@@ -13,7 +13,7 @@ jobs:
         os: [macos-latest, windows-latest, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -29,7 +29,7 @@ jobs:
       - if: runner.os == 'macOS'
         run: ./scripts/bundle-macos.sh
       - if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Fanhuaji-macos-unsigned
           path: target/release/bundle/Fanhuaji.app
