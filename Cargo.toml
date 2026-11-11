@@ -11,7 +11,8 @@ fanhuaji-core = { path = "../fanhuaji-tauri/src-tauri/core" }
 # Pinned exactly because gpui-component pins them too.
 gpui = { package = "gpui-pre", version = "=0.3.12" }
 # runtime_shaders: compiles Metal shaders at launch, so building does not need full Xcode.
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["runtime_shaders"] }
+# font-kit: without it the macOS backend has no text system and renders no text at all.
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["runtime_shaders", "font-kit"] }
 gpui-component = "=0.9.1"
 reqwest = { version = "0.13", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
