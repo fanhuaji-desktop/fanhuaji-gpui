@@ -197,6 +197,10 @@ enum Modules {
     Failed(String),
 }
 
+/// The main view, for app-level actions that arrive when nothing in it has focus.
+struct MainView(gpui::WeakEntity<Fanhuaji>);
+impl gpui::Global for MainView {}
+
 /// A destructive click waiting for its confirming second click, as in the Tauri app.
 #[derive(Clone, Copy, PartialEq)]
 enum Armed {
@@ -223,6 +227,8 @@ struct Fanhuaji {
     armed: Option<Armed>,
     /// Files finished and total in the running batch, for the progress bar.
     batch: Option<(usize, usize)>,
+    /// Files whose backup is being put back; a second Undo/Reconvert click is ignored.
+    restoring: std::collections::HashSet<FileId>,
     dark: bool,
     /// The update section's status line.
     update_status: String,
@@ -356,6 +362,7 @@ impl Fanhuaji {
             module_category: String::new(),
             armed: None,
             batch: None,
+            restoring: Default::default(),
             dark: false,
             update_status: String::new(),
             update: None,
@@ -449,11 +456,21 @@ impl Fanhuaji {
 
     fn add_paths(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
         self.armed = None;
+        let mut first_added = None;
         for path in paths.iter().filter(|p| is_supported(p)) {
-            self.queue.add(path.clone());
+            if self.queue.add(path.clone()) && first_added.is_none() {
+                first_added = self.queue.files.last().map(|f| f.id);
+            }
         }
-        if self.settings.auto_convert && !self.queue.stopped() {
+        // As in the Tauri app, adding files restarts a stopped queue.
+        if self.settings.auto_convert {
             self.start(None, cx);
+        }
+        // Started first, so the preview waits for the conversion instead of asking the API.
+        // Not `select`: that would hide an open settings panel without moving focus.
+        if let Some(id) = first_added {
+            self.selected = Some(id);
+            self.refresh_preview(cx);
         }
         cx.notify();
     }
@@ -498,6 +515,17 @@ impl Fanhuaji {
         self.show_settings = true;
         self.tab = tab;
         cx.notify();
+    }
+
+    /// Hide settings and give focus back to the window, whose actions and keys would
+    /// otherwise stop working once the focused text field is no longer drawn.
+    fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.focus, cx);
+        if self.show_settings {
+            self.show_settings = false;
+            // Settings may have changed what the pending preview should show.
+            self.refresh_preview(cx);
+        }
     }
 
     fn select(&mut self, id: FileId, cx: &mut Context<Self>) {
@@ -590,11 +618,16 @@ impl Fanhuaji {
         cx: &mut Context<Self>,
         then: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
     ) {
+        if !self.restoring.insert(id) {
+            return;
+        }
+        cx.notify();
         let backups = self.backups.clone();
         let job = RT.spawn_blocking(move || backups.restore(&id.to_string()));
         cx.spawn(async move |this, cx| {
             let result = job.await.map_err(|e| e.to_string()).and_then(|r| r);
             let _ = this.update(cx, |app, cx| {
+                app.restoring.remove(&id);
                 let Some(file) = app.queue.get_mut(id) else {
                     return;
                 };
@@ -784,6 +817,15 @@ impl Fanhuaji {
                 // Files dropped in mid-batch are still waiting.
                 if app.queue.should_resume(app.settings.auto_convert) {
                     app.start(None, cx);
+                }
+                // A selected file left pending (Stop, or auto-convert off) said "converting".
+                let pending = |app: &Self| {
+                    app.selected
+                        .and_then(|id| app.queue.get(id))
+                        .is_some_and(|f| f.status == Status::Pending)
+                };
+                if !app.queue.converting() && pending(app) {
+                    app.refresh_preview(cx);
                 }
                 cx.notify();
             });
@@ -985,11 +1027,9 @@ impl Render for Fanhuaji {
                     }),
                     false,
                 )
-                .on_click(cx.listener(|app, _, _, cx| {
+                .on_click(cx.listener(|app, _, window, cx| {
                     if app.show_settings {
-                        app.show_settings = false;
-                        // Settings may have changed what the pending preview should show.
-                        app.refresh_preview(cx);
+                        app.close_settings(window, cx);
                     } else {
                         app.open_settings(app.tab, cx);
                     }
@@ -1010,15 +1050,26 @@ impl Render for Fanhuaji {
             .on_action(|_: &ToggleFullscreen, window, _| window.toggle_fullscreen())
             // Text inputs have the deeper "Input" context, so arrows and delete stay theirs there.
             .key_context("FileList")
-            .on_action(cx.listener(|app, _: &SelectPrev, _, cx| app.select_step(false, cx)))
-            .on_action(cx.listener(|app, _: &SelectNext, _, cx| app.select_step(true, cx)))
-            .on_action(cx.listener(|app, _: &RemoveSelected, _, cx| app.remove_selected(cx)))
-            .on_action(cx.listener(|app, _: &CloseSettings, _, cx| {
-                if app.show_settings {
-                    app.show_settings = false;
-                    app.refresh_preview(cx);
+            // Only when the window itself has focus: a text field passes Backspace up when
+            // its cursor is at the start, which must not remove a file.
+            .on_action(cx.listener(|app, _: &SelectPrev, window, cx| {
+                if app.focus.is_focused(window) {
+                    app.select_step(false, cx)
                 }
             }))
+            .on_action(cx.listener(|app, _: &SelectNext, window, cx| {
+                if app.focus.is_focused(window) {
+                    app.select_step(true, cx)
+                }
+            }))
+            .on_action(cx.listener(|app, _: &RemoveSelected, window, cx| {
+                if app.focus.is_focused(window) {
+                    app.remove_selected(cx)
+                }
+            }))
+            .on_action(
+                cx.listener(|app, _: &CloseSettings, window, cx| app.close_settings(window, cx)),
+            )
             // Files can be dropped anywhere in the window, as in the Tauri app.
             .group("root")
             .on_drop(cx.listener(|app, paths: &ExternalPaths, _, cx| {
@@ -1199,7 +1250,10 @@ impl Fanhuaji {
                     .cursor_pointer()
                     .when(self.selected == Some(id), |d| d.bg(rgb(selected_bg)))
                     .hover(move |s| s.bg(rgb(hover)))
-                    .on_click(cx.listener(move |app, _, _, cx| app.select(id, cx)))
+                    .on_click(cx.listener(move |app, _, window, cx| {
+                        window.focus(&app.focus, cx);
+                        app.select(id, cx);
+                    }))
                     .child(
                         div()
                             .flex_none()
@@ -1230,14 +1284,17 @@ impl Fanhuaji {
                             }),
                         ))
                     })
-                    .when(f.overwritten && f.is_finished(), |d| {
-                        d.child(small_action(("undo", id), t("file.undo"), false).on_click(
-                            cx.listener(move |app, _, _, cx| {
-                                cx.stop_propagation();
-                                app.restore(id, cx, |_, _| {});
-                            }),
-                        ))
-                    })
+                    .when(
+                        f.overwritten && f.is_finished() && !self.restoring.contains(&id),
+                        |d| {
+                            d.child(small_action(("undo", id), t("file.undo"), false).on_click(
+                                cx.listener(move |app, _, _, cx| {
+                                    cx.stop_propagation();
+                                    app.restore(id, cx, |_, _| {});
+                                }),
+                            ))
+                        },
+                    )
                     .when(removable, |d| {
                         let label = if armed { "⚠" } else { "✕" };
                         d.child(small_action(("remove", id), label.into(), armed).on_click(
@@ -1971,8 +2028,18 @@ fn main() {
             KeyBinding::new(minimize, Minimize, None),
             KeyBinding::new(fullscreen, ToggleFullscreen, None),
         ]);
-        // When no view handles it (e.g. no window), quit outright.
-        cx.on_action(|_: &Quit, cx| cx.quit());
+        // Reached when focus is outside the view: still ask before dropping work or Undo.
+        cx.on_action(|_: &Quit, cx| {
+            let view = cx.try_global::<MainView>().and_then(|v| v.0.upgrade());
+            let window = cx.windows().first().copied();
+            if let (Some(view), Some(window)) = (view, window) {
+                let _ = window.update(cx, |_, window, cx| {
+                    view.update(cx, |app, cx| app.request_quit(window, cx))
+                });
+            } else {
+                cx.quit();
+            }
+        });
 
         let bounds = Bounds::centered(None, size(px(1080.), px(720.)), cx);
         cx.open_window(
@@ -1991,6 +2058,7 @@ fn main() {
                 // The locale is known now; set what depends on it.
                 window.set_window_title(&t("app.title"));
                 cx.set_menus(menus());
+                cx.set_global(MainView(app.downgrade()));
                 let handle = app.clone();
                 window.on_window_should_close(cx, move |window, cx| {
                     handle.update(cx, |app, cx| app.request_quit(window, cx));
