@@ -1,4 +1,5 @@
 mod diff;
+mod queue;
 
 use diff::Row;
 use fanhuaji_core::{Backups, ConvertFileResult, ConvertParams, EpubProgress, PreviewResult};
@@ -7,6 +8,7 @@ use gpui::{
     PathPromptOptions, SharedString, StyledText, Window, WindowBounds, WindowOptions, div,
     prelude::*, px, rgb, size,
 };
+use queue::{FileId, Queue, Status};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
@@ -44,21 +46,6 @@ fn is_supported(path: &Path) -> bool {
 fn is_epub(path: &Path) -> bool {
     path.extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("epub"))
-}
-
-enum Status {
-    Pending,
-    Converting(Option<(usize, usize)>),
-    Done(String),
-    Warning(String),
-    Failed(String),
-}
-
-struct FileItem {
-    path: PathBuf,
-    status: Status,
-    /// What the finished conversion wrote, and with which converter.
-    saved: Option<(PreviewResult, &'static str)>,
 }
 
 enum PreviewBody {
@@ -120,12 +107,11 @@ fn file_params(path: &Path, converter: &str, file_id: String) -> ConvertParams {
 }
 
 struct Fanhuaji {
-    files: Vec<FileItem>,
+    queue: Queue,
     converter: &'static str,
-    converting: bool,
     client: reqwest::Client,
     backups: Arc<Backups>,
-    selected: Option<usize>,
+    selected: Option<FileId>,
     preview: Option<Preview>,
     /// Bumped per preview request, so a slow response can't replace a newer one.
     preview_gen: u64,
@@ -134,13 +120,7 @@ struct Fanhuaji {
 impl Fanhuaji {
     fn add_paths(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
         for path in paths.iter().filter(|p| is_supported(p)) {
-            if !self.files.iter().any(|f| &f.path == path) {
-                self.files.push(FileItem {
-                    path: path.clone(),
-                    status: Status::Pending,
-                    saved: None,
-                });
-            }
+            self.queue.add(path.clone());
         }
         cx.notify();
     }
@@ -160,9 +140,34 @@ impl Fanhuaji {
         .detach();
     }
 
-    fn select(&mut self, i: usize, cx: &mut Context<Self>) {
-        self.selected = Some(i);
+    fn select(&mut self, id: FileId, cx: &mut Context<Self>) {
+        self.selected = Some(id);
         self.refresh_preview(cx);
+    }
+
+    /// After files leave the list: drop the selection if its file is gone.
+    fn removed(&mut self, cx: &mut Context<Self>) {
+        if self.selected.is_some_and(|id| self.queue.get(id).is_none()) {
+            self.selected = None;
+            self.refresh_preview(cx);
+        }
+        cx.notify();
+    }
+
+    /// Convert a finished file again with the current converter.
+    fn reconvert(&mut self, id: FileId, cx: &mut Context<Self>) {
+        if self.queue.converting() {
+            return;
+        }
+        let Some(file) = self.queue.get_mut(id) else {
+            return;
+        };
+        file.status = Status::Pending;
+        file.saved = None;
+        self.start(Some(id), cx);
+        // The batch marks it converting on its first step; don't fetch a preview meanwhile.
+        self.preview_gen += 1;
+        self.preview = Some(Preview::message("轉換完成後顯示預覽…"));
     }
 
     /// Show the selected file's diff. A finished file shows what was written; a pending
@@ -170,7 +175,7 @@ impl Fanhuaji {
     fn refresh_preview(&mut self, cx: &mut Context<Self>) {
         self.preview_gen += 1;
         cx.notify();
-        let Some(file) = self.selected.and_then(|i| self.files.get(i)) else {
+        let Some(file) = self.selected.and_then(|id| self.queue.get(id)) else {
             self.preview = None;
             return;
         };
@@ -207,45 +212,47 @@ impl Fanhuaji {
         });
     }
 
-    /// Convert pending files one at a time, like the Tauri app's queue.
-    fn start(&mut self, cx: &mut Context<Self>) {
-        if self.converting {
+    /// Convert pending files one at a time, or only `only` (Reconvert). Stop takes effect
+    /// before the next file; files removed meanwhile are skipped.
+    fn start(&mut self, only: Option<FileId>, cx: &mut Context<Self>) {
+        let Some(ids) = self.queue.begin(only) else {
             return;
-        }
-        self.converting = true;
+        };
         cx.notify();
         cx.spawn(async move |this, cx| {
-            loop {
+            for id in ids {
+                if this
+                    .update(cx, |app, _| app.queue.stop_requested())
+                    .unwrap_or(true)
+                {
+                    break;
+                }
                 let next = this.update(cx, |app, cx| {
-                    let i = app
-                        .files
-                        .iter()
-                        .position(|f| matches!(f.status, Status::Pending))?;
-                    app.files[i].status = Status::Converting(None);
-                    if app.selected == Some(i) {
+                    let file = app
+                        .queue
+                        .get_mut(id)
+                        .filter(|f| f.status == Status::Pending)?;
+                    file.status = Status::Converting(None);
+                    let path = file.path.clone();
+                    if app.selected == Some(id) {
                         app.refresh_preview(cx);
                     }
                     cx.notify();
-                    Some((
-                        i,
-                        app.files[i].path.clone(),
-                        app.converter,
-                        app.client.clone(),
-                        app.backups.clone(),
-                    ))
+                    Some((path, app.converter, app.client.clone(), app.backups.clone()))
                 });
-                let Ok(Some((i, path, converter, client, backups))) = next else {
-                    break;
+                let Ok(Some((path, converter, client, backups))) = next else {
+                    continue;
                 };
 
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<EpubProgress>();
-                let job = RT.spawn(convert(path, converter, i, client, backups, tx));
+                let job = RT.spawn(convert(path, converter, id, client, backups, tx));
                 // The sender lives inside the job, so this ends when the job does.
                 while let Some(p) = rx.recv().await {
                     let _ = this.update(cx, |app, cx| {
-                        app.files[i].status =
-                            Status::Converting(Some((p.chapter_index, p.chapter_total)));
-                        cx.notify();
+                        if let Some(f) = app.queue.get_mut(id) {
+                            f.status = Status::Converting(Some((p.chapter_index, p.chapter_total)));
+                            cx.notify();
+                        }
                     });
                 }
                 let (status, saved) = match job.await {
@@ -260,16 +267,18 @@ impl Fanhuaji {
                     Err(e) => (Status::Failed(e.to_string()), None),
                 };
                 let _ = this.update(cx, |app, cx| {
-                    app.files[i].status = status;
-                    app.files[i].saved = saved;
-                    if app.selected == Some(i) {
+                    if let Some(f) = app.queue.get_mut(id) {
+                        f.status = status;
+                        f.saved = saved;
+                    }
+                    if app.selected == Some(id) {
                         app.refresh_preview(cx);
                     }
                     cx.notify();
                 });
             }
             let _ = this.update(cx, |app, cx| {
-                app.converting = false;
+                app.queue.end(only);
                 cx.notify();
             });
         })
@@ -280,12 +289,12 @@ impl Fanhuaji {
 async fn convert(
     path: PathBuf,
     converter: &'static str,
-    index: usize,
+    id: FileId,
     client: reqwest::Client,
     backups: Arc<Backups>,
     tx: tokio::sync::mpsc::UnboundedSender<EpubProgress>,
 ) -> Result<ConvertFileResult, String> {
-    let params = file_params(&path, converter, index.to_string());
+    let params = file_params(&path, converter, id.to_string());
     let on_progress = move |p| {
         let _ = tx.send(p);
     };
@@ -343,7 +352,7 @@ impl Render for Fanhuaji {
                     .cursor_pointer()
                     .child(label)
                     .on_click(cx.listener(move |app, _, _, cx| {
-                        if !app.converting && app.converter != key {
+                        if !app.queue.converting() && app.converter != key {
                             app.converter = key;
                             app.refresh_preview(cx);
                         }
@@ -367,13 +376,14 @@ impl Render for Fanhuaji {
             .on_drop(cx.listener(|app, paths: &ExternalPaths, _, cx| {
                 app.add_paths(paths.paths(), cx);
             }))
-            .when(self.files.is_empty(), |d| {
+            .when(self.queue.files.is_empty(), |d| {
                 d.items_center()
                     .justify_center()
                     .text_color(rgb(0x6b7280))
                     .child("把檔案拖到這裡，或按「加入檔案」")
             })
-            .children(self.files.iter().enumerate().map(|(i, f)| {
+            .children(self.queue.files.iter().map(|f| {
+                let id = f.id;
                 let name = f
                     .path
                     .file_name()
@@ -390,26 +400,55 @@ impl Render for Fanhuaji {
                     // shortcut: raw error codes; map them via the Tauri app's locale JSON when adding i18n.
                     Status::Failed(e) => (format!("失敗：{e}").into(), rgb(0xdc2626)),
                 };
+                let removable = !matches!(f.status, Status::Converting(_));
                 div()
-                    .id(i)
+                    .id(("file", id))
                     .flex()
-                    .flex_col()
+                    .items_center()
+                    .gap_2()
                     .px_3()
                     .py_2()
                     .border_b_1()
                     .border_color(rgb(0xe5e7eb))
                     .cursor_pointer()
-                    .when(self.selected == Some(i), |d| d.bg(rgb(0xdbeafe)))
+                    .when(self.selected == Some(id), |d| d.bg(rgb(0xdbeafe)))
                     .hover(|s| s.bg(rgb(0xf3f4f6)))
-                    .on_click(cx.listener(move |app, _, _, cx| app.select(i, cx)))
-                    .child(name)
-                    .child(div().text_sm().text_color(color).child(note))
+                    .on_click(cx.listener(move |app, _, _, cx| app.select(id, cx)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(name)
+                            .child(div().text_sm().text_color(color).child(note)),
+                    )
+                    .when(removable, |d| {
+                        d.child(
+                            div()
+                                .id(("remove", id))
+                                .px_1()
+                                .rounded_sm()
+                                .text_color(rgb(0x9ca3af))
+                                .hover(|s| s.text_color(rgb(0xdc2626)).bg(rgb(0xfee2e2)))
+                                .child("✕")
+                                .on_click(cx.listener(move |app, _, _, cx| {
+                                    cx.stop_propagation();
+                                    app.queue.remove(id);
+                                    app.removed(cx);
+                                })),
+                        )
+                    })
             }));
 
-        let has_pending = self
+        let q = &self.queue;
+        let converting = q.converting();
+        let has_pending = q.files.iter().any(|f| f.status == Status::Pending);
+        let has_failed = q
             .files
             .iter()
-            .any(|f| matches!(f.status, Status::Pending));
+            .any(|f| matches!(f.status, Status::Failed(_)));
+        let done = q.files.iter().filter(|f| f.is_finished()).count();
         let actions = div()
             .flex()
             .gap_2()
@@ -418,28 +457,53 @@ impl Render for Fanhuaji {
                 button("add", "加入檔案", false)
                     .on_click(cx.listener(|app, _, _, cx| app.pick_files(cx))),
             )
-            .child(
-                button("clear", "清除", false).on_click(cx.listener(|app, _, _, cx| {
-                    if !app.converting {
-                        app.files.clear();
-                        app.selected = None;
-                        app.refresh_preview(cx);
-                    }
-                })),
-            )
-            .child(
-                button(
-                    "start",
-                    if self.converting {
-                        "轉換中…"
-                    } else {
-                        "開始轉換"
-                    },
-                    true,
+            // Only worth a button when it clears less than "清除列表" would.
+            .when(done > 0 && done < q.files.len(), |d| {
+                d.child(
+                    button("clear-done", "清除已完成", false).on_click(cx.listener(
+                        |app, _, _, cx| {
+                            app.queue.remove_completed();
+                            app.removed(cx);
+                        },
+                    )),
                 )
-                .when(!has_pending || self.converting, |b| b.opacity(0.5))
-                .on_click(cx.listener(|app, _, _, cx| app.start(cx))),
-            );
+            })
+            // Clearing mid-batch would hide files the running loop is still writing.
+            .when(!converting && !q.files.is_empty(), |d| {
+                d.child(button("clear", "清除列表", false).on_click(cx.listener(
+                    |app, _, _, cx| {
+                        app.queue.files.clear();
+                        app.removed(cx);
+                    },
+                )))
+            })
+            .when(!converting && has_failed, |d| {
+                d.child(button("retry", "重試失敗", false).on_click(cx.listener(
+                    |app, _, _, cx| {
+                        app.queue.reset_errors();
+                        app.start(None, cx);
+                    },
+                )))
+            })
+            .when(converting, |d| {
+                let label = if q.stop_requested() {
+                    "停止中…"
+                } else {
+                    "停止"
+                };
+                d.child(
+                    button("stop", label, false).on_click(cx.listener(|app, _, _, cx| {
+                        app.queue.stop();
+                        cx.notify();
+                    })),
+                )
+            })
+            .when(!converting && has_pending, |d| {
+                d.child(
+                    button("start", "開始轉換", true)
+                        .on_click(cx.listener(|app, _, _, cx| app.start(None, cx))),
+                )
+            });
 
         div()
             .size_full()
@@ -457,14 +521,14 @@ impl Render for Fanhuaji {
                     .flex()
                     .gap_3()
                     .child(list)
-                    .child(self.render_preview()),
+                    .child(self.render_preview(cx)),
             )
             .child(actions)
     }
 }
 
 impl Fanhuaji {
-    fn render_preview(&self) -> impl IntoElement {
+    fn render_preview(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let pane = div()
             .id("preview")
             .flex_1()
@@ -483,16 +547,36 @@ impl Fanhuaji {
                 .text_color(rgb(0x6b7280))
                 .child("點選左側檔案以預覽轉換差異");
         };
-        let pane = pane.child(
-            div()
-                .px_3()
-                .py_2()
-                .text_sm()
-                .text_color(rgb(0x6b7280))
-                .border_b_1()
-                .border_color(rgb(0xe5e7eb))
-                .child(preview.stats.clone()),
-        );
+        // A finished file converted with another mode than the one now selected.
+        let stale = self
+            .selected
+            .and_then(|id| self.queue.get(id))
+            .filter(|f| f.is_finished() && !self.queue.converting())
+            .and_then(|f| f.saved.as_ref())
+            .is_some_and(|(_, conv)| *conv != self.converter);
+        let pane =
+            pane.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .text_sm()
+                    .text_color(rgb(0x6b7280))
+                    .border_b_1()
+                    .border_color(rgb(0xe5e7eb))
+                    .child(div().flex_1().child(preview.stats.clone()))
+                    .when(stale, |d| {
+                        d.child(button("reconvert", "以目前模式重新轉換", false).on_click(
+                            cx.listener(|app, _, _, cx| {
+                                if let Some(id) = app.selected {
+                                    app.reconvert(id, cx);
+                                }
+                            }),
+                        ))
+                    }),
+            );
         match &preview.body {
             PreviewBody::Message(m) => {
                 pane.child(div().p_4().text_color(rgb(0x6b7280)).child(m.clone()))
@@ -597,9 +681,8 @@ fn main() {
             },
             |_, cx| {
                 cx.new(|_| Fanhuaji {
-                    files: Vec::new(),
+                    queue: Queue::default(),
                     converter: "Taiwan",
-                    converting: false,
                     client,
                     backups: Arc::new(backups),
                     selected: None,
