@@ -223,5 +223,6 @@
   "queue.title": "文件队列",
   "preview.emptyTitle": "选择一个文件来预览",
   "preview.emptyHint": "在左侧点选文件，即时显示逐句「原文 → 转换后」对照",
-  "status.filesUnit": "档"
+  "status.filesUnit": "档",
+  "modules.loadFailed": "无法加载模块列表：{error}"
 }

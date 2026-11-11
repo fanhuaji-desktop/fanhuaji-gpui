@@ -138,7 +138,10 @@ mod tests {
 
     #[test]
     fn interpolates_params() {
-        assert_eq!(t_in(ZhTw, "update.found", &[("version", "3.0.0")]), "發現新版本 3.0.0");
+        assert_eq!(
+            t_in(ZhTw, "update.found", &[("version", "3.0.0")]),
+            "發現新版本 3.0.0"
+        );
         assert_eq!(
             t_in(
                 ZhTw,
@@ -147,7 +150,10 @@ mod tests {
             ),
             "轉換中… (2/10 Chapter 2)"
         );
-        assert_eq!(t_in(En, "update.found", &[("version", "2.0.0")]), "New version 2.0.0 available");
+        assert_eq!(
+            t_in(En, "update.found", &[("version", "2.0.0")]),
+            "New version 2.0.0 available"
+        );
         assert!(t_in(ZhTw, "update.failed", &[("error", "$100 error")]).contains("$100 error"));
         assert_eq!(
             t_in(ZhTw, "dom.missingElement", &[("selector", "#test")]),
@@ -163,7 +169,11 @@ mod tests {
         assert_eq!(Locale::detect(Some("zh-Hans-CN")), ZhCn);
         assert_eq!(Locale::detect(Some("zh-Hant")), ZhTw);
         assert_eq!(Locale::detect(Some("zh-Hant-HK")), ZhTw);
-        assert_eq!(Locale::detect(Some("zh-HK")), ZhTw, "other zh variants stay Traditional");
+        assert_eq!(
+            Locale::detect(Some("zh-HK")),
+            ZhTw,
+            "other zh variants stay Traditional"
+        );
         assert_eq!(Locale::detect(Some("zh")), ZhCn);
         assert_eq!(Locale::detect(Some("en-US")), En);
         assert_eq!(Locale::detect(Some("ja")), En);
@@ -172,9 +182,18 @@ mod tests {
 
     #[test]
     fn translates_error_codes() {
-        assert_eq!(translate_error_in(ZhTw, "FILE_TOO_LARGE"), "檔案過大（上限 50 MB）");
-        assert_eq!(translate_error_in(En, "FILE_TOO_LARGE"), "File too large (limit 50 MB)");
-        assert_eq!(translate_error_in(En, "API_ERROR:timeout"), "API error: timeout");
+        assert_eq!(
+            translate_error_in(ZhTw, "FILE_TOO_LARGE"),
+            "檔案過大（上限 50 MB）"
+        );
+        assert_eq!(
+            translate_error_in(En, "FILE_TOO_LARGE"),
+            "File too large (limit 50 MB)"
+        );
+        assert_eq!(
+            translate_error_in(En, "API_ERROR:timeout"),
+            "API error: timeout"
+        );
         assert_eq!(
             translate_error_in(ZhTw, "EPUB_PARTIAL_FAILED:3/10"),
             "部分章節失敗（3/10）"
@@ -184,8 +203,11 @@ mod tests {
             "API error: $100 credit failed"
         );
         assert!(
-            translate_error_in(ZhTw, "NET_REQUEST_FAILED:connection to api.example.com:443 refused")
-                .ends_with("connection to api.example.com:443 refused"),
+            translate_error_in(
+                ZhTw,
+                "NET_REQUEST_FAILED:connection to api.example.com:443 refused"
+            )
+            .ends_with("connection to api.example.com:443 refused"),
             "detail keeps its own colons"
         );
     }
@@ -196,7 +218,10 @@ mod tests {
             translate_error_in(ZhTw, "TOTALLY_UNKNOWN_CODE:detail"),
             "TOTALLY_UNKNOWN_CODE:detail"
         );
-        assert_eq!(translate_error_in(ZhTw, "some plain error message"), "some plain error message");
+        assert_eq!(
+            translate_error_in(ZhTw, "some plain error message"),
+            "some plain error message"
+        );
         assert_eq!(translate_error_in(ZhTw, "lower_case:x"), "lower_case:x");
         assert_eq!(translate_error_in(ZhTw, ""), "");
     }

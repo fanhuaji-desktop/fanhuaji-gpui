@@ -223,5 +223,6 @@
   "queue.title": "File queue",
   "preview.emptyTitle": "Select a file to preview",
   "preview.emptyHint": "Click a file on the left to see an \u201coriginal \u2192 converted\u201d comparison line by line",
-  "status.filesUnit": "files"
+  "status.filesUnit": "files",
+  "modules.loadFailed": "Couldn't load the module list: {error}"
 }

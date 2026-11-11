@@ -223,5 +223,6 @@
   "queue.title": "檔案佇列",
   "preview.emptyTitle": "選一個檔案來預覽",
   "preview.emptyHint": "左側點選檔案，即時顯示逐句「原文 → 轉換後」對照",
-  "status.filesUnit": "檔"
+  "status.filesUnit": "檔",
+  "modules.loadFailed": "無法載入模組清單：{error}"
 }

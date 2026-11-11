@@ -36,6 +36,10 @@ pub struct FileItem {
     pub saved: Option<(PreviewResult, OutputKey)>,
     /// Overwrote its input; a backup exists for Undo.
     pub overwritten: bool,
+    /// Where the conversion was written.
+    pub output: Option<PathBuf>,
+    /// The EPUB chapter being converted, for the progress line.
+    pub chapter: String,
 }
 
 impl FileItem {
@@ -79,6 +83,8 @@ impl Queue {
             status: Status::Pending,
             saved: None,
             overwritten: false,
+            output: None,
+            chapter: String::new(),
         });
         true
     }
@@ -337,7 +343,11 @@ mod tests {
         let (mut q, _) = queue(&[done(), done(), Status::Restored]);
         q.files[0].overwritten = true;
         q.files[2].overwritten = true;
-        assert_eq!(Queue::undoable(&q.files), 1, "restored files have no Undo left");
+        assert_eq!(
+            Queue::undoable(&q.files),
+            1,
+            "restored files have no Undo left"
+        );
         assert_eq!(Queue::undoable(&q.files[1..]), 0);
     }
 
