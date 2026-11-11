@@ -226,5 +226,7 @@
   "status.filesUnit": "檔",
   "modules.loadFailed": "無法載入模組清單：{error}",
   "update.downloadAvailable": "發現新版本 {version}，請至 GitHub Releases 下載。",
-  "files.tooMany": "只加入了前 {count} 個檔案。"
+  "files.tooMany": "只加入了前 {count} 個檔案。",
+  "errors.UPDATE_SIGNATURE_INVALID": "更新檔的簽章不符，已停止安裝：{detail}",
+  "errors.UPDATE_INSTALL_FAILED": "無法安裝更新：{detail}"
 }

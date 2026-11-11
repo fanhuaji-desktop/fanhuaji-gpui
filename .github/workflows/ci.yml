@@ -6,19 +6,30 @@ on:
   pull_request:
 
 jobs:
-  macos:
-    runs-on: macos-latest
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-x11-dev libwayland-dev libvulkan-dev libfontconfig-dev libx11-xcb-dev libzstd-dev
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
-      - run: ./scripts/bundle-macos.sh
-      - uses: actions/upload-artifact@v4
+      - if: runner.os == 'macOS'
+        run: ./scripts/bundle-macos.sh
+      - if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
         with:
           name: Fanhuaji-macos-unsigned
           path: target/release/bundle/Fanhuaji.app

@@ -24,9 +24,18 @@ serde_json = "1.0.154"
 dirs = "7.0.0"
 sys-locale = "0.3.2"
 gpui-kit-assets = "=0.9.1"
+minisign-verify = "0.3.0"
+zip = "9"
 
 # Sets the Dock icon at launch, so `cargo run` (no .app bundle) shows the app's icon too.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData"] }
+
+# The Linux backend ships with no windowing system enabled; turn both on.
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["wayland", "x11"] }
+
+[target."cfg(windows)".build-dependencies]
+winresource = "0.1.34"

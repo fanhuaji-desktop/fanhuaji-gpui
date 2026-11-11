@@ -197,7 +197,6 @@ impl Fanhuaji {
             .child(self.render_mode_segment(cx))
             .child(self.render_output_pill(cx));
         if let Some(r) = &self.update {
-            let url = r.url.clone();
             controls = controls.child(
                 div()
                     .id("update-chip")
@@ -214,7 +213,7 @@ impl Fanhuaji {
                     .cursor_pointer()
                     .child(icon("download").size(px(14.)))
                     .child(tp("update.chip", &[("version", &r.version)]))
-                    .on_click(move |_, _, cx| cx.open_url(&url)),
+                    .on_click(cx.listener(|app, _, window, cx| app.prompt_install(window, cx))),
             );
         }
         controls = controls.child(icon_button(p, "settings-btn", "settings", 18.).on_click(
@@ -1457,9 +1456,9 @@ impl Fanhuaji {
                                 .hover(move |s| s.bg(c(hover)))
                                 .child(icon("download").size(px(14.)))
                                 .child(t("settings.update.check"))
-                                .on_click(
-                                    cx.listener(|app, _, _, cx| app.check_updates(false, cx)),
-                                ),
+                                .on_click(cx.listener(|app, _, window, cx| {
+                                    app.check_updates(false, window, cx)
+                                })),
                         )
                         .child(
                             div()

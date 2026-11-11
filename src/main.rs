@@ -1,3 +1,6 @@
+// Release builds on Windows are GUI apps: no console window behind the main one.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod diff;
 mod files;
 mod i18n;
@@ -237,6 +240,10 @@ struct Fanhuaji {
     update_status: String,
     /// A newer release found by a check, shown as a chip in the top bar.
     update: Option<updater::Release>,
+    /// The verified zip of `update`, kept so a second confirmation doesn't download it again.
+    downloaded: Option<Arc<Vec<u8>>>,
+    /// Downloading or installing an update; the chip ignores clicks meanwhile.
+    installing: bool,
     pre_replace: Entity<TextareaState>,
     post_replace: Entity<TextareaState>,
     protect_replace: Entity<TextareaState>,
@@ -371,6 +378,8 @@ impl Fanhuaji {
             notice: None,
             update_status: String::new(),
             update: None,
+            downloaded: None,
+            installing: false,
             pre_replace,
             post_replace,
             protect_replace,
@@ -378,34 +387,170 @@ impl Fanhuaji {
             _subscriptions: subscriptions,
         };
         app.apply_theme(window, cx);
-        app.check_updates(true, cx);
+        app.check_updates(true, window, cx);
         app
     }
 
-    /// `silent`: the startup check, which only speaks up when there is an update.
-    fn check_updates(&mut self, silent: bool, cx: &mut Context<Self>) {
+    /// `silent`: the startup check, which only shows the chip; a manual check that finds an
+    /// update asks to install it right away, as in the Tauri app.
+    fn check_updates(&mut self, silent: bool, window: &mut Window, cx: &mut Context<Self>) {
         if !silent {
             self.update_status = t("update.checking");
             cx.notify();
         }
         let client = self.client.clone();
         let job = RT.spawn(async move { updater::check(&client, env!("CARGO_PKG_VERSION")).await });
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let result = job.await.map_err(|e| e.to_string()).and_then(|r| r);
-            let _ = this.update(cx, |app, cx| {
+            let _ = this.update_in(cx, |app, window, cx| {
                 app.update_status = match &result {
+                    Ok(Some(r)) if installable(r) => tp("update.found", &[("version", &r.version)]),
                     Ok(Some(r)) => tp("update.downloadAvailable", &[("version", &r.version)]),
                     Ok(None) if !silent => t("update.upToDate"),
                     Err(e) if !silent => tp("update.failed", &[("error", &translate_error(e))]),
                     _ => String::new(),
                 };
                 if let Ok(Some(release)) = result {
+                    if app.update.as_ref() != Some(&release) {
+                        app.downloaded = None;
+                    }
                     app.update = Some(release);
+                    if !silent {
+                        app.prompt_install(window, cx);
+                    }
                 }
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// Ask, then download, verify, install and restart. A running batch blocks it; Undo
+    /// that the restart would lose is spelled out. Without an asset for this platform (or
+    /// in a dev build) the release page opens instead.
+    fn prompt_install(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(release) = self.update.clone() else {
+            return;
+        };
+        if !installable(&release) {
+            cx.open_url(&release.url);
+            return;
+        }
+        if self.installing {
+            return;
+        }
+        let converting = self.queue.converting();
+        let undoable = Queue::undoable(&self.queue.files);
+        let warning = if converting {
+            t("update.busy")
+        } else if undoable > 0 {
+            tp("update.undoWarning", &[("count", &undoable.to_string())])
+        } else {
+            String::new()
+        };
+        let mut description = vec![t("update.prompt")];
+        description.extend([warning, release.notes.trim().to_string()]);
+        description.retain(|line| !line.is_empty());
+        let description = description.join("\n\n");
+        let view = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let alert = alert
+                .title(tp("update.found", &[("version", &release.version)]))
+                .description(description.clone());
+            if converting {
+                return alert.ok_text(t("update.later"));
+            }
+            let view = view.clone();
+            alert
+                .show_cancel(true)
+                .ok_text(t("update.install"))
+                .cancel_text(t("update.later"))
+                .on_ok(move |_, window, cx| {
+                    let _ = view.update(cx, |app, cx| app.download_update(undoable, window, cx));
+                    true
+                })
+        });
+    }
+
+    /// `warned`: how many overwritten files the user agreed to lose Undo for.
+    fn download_update(&mut self, warned: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(asset) = self.update.as_ref().and_then(|r| r.asset.clone()) else {
+            return;
+        };
+        self.installing = true;
+        if let Some(zip) = self.downloaded.clone() {
+            self.finish_update(zip, warned, window, cx);
+            return;
+        }
+        self.update_status = t("update.downloading");
+        cx.notify();
+        let client = self.client.clone();
+        let job = RT.spawn(async move { updater::download(&client, &asset).await });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = job.await.map_err(|e| e.to_string()).and_then(|r| r);
+            let _ = this.update_in(cx, |app, window, cx| match result {
+                Ok(zip) => {
+                    let zip = Arc::new(zip);
+                    app.downloaded = Some(zip.clone());
+                    app.finish_update(zip, warned, window, cx);
+                }
+                Err(e) => app.update_failed(&e, cx),
+            });
+        })
+        .detach();
+    }
+
+    /// Install once no batch runs, asking again if more files became undoable meanwhile.
+    fn finish_update(
+        &mut self,
+        zip: Arc<Vec<u8>>,
+        warned: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.queue.converting() {
+            self.update_status = t("update.waiting");
+            cx.notify();
+            cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(500))
+                    .await;
+                let _ = this.update_in(cx, |app, window, cx| {
+                    app.finish_update(zip, warned, window, cx)
+                });
+            })
+            .detach();
+            return;
+        }
+        if Queue::undoable(&self.queue.files) > warned {
+            self.installing = false;
+            self.prompt_install(window, cx);
+            return;
+        }
+        self.update_status = t("update.restarting");
+        cx.notify();
+        // shortcut: a batch started during the install itself (about a second) is cut off
+        // by the restart, as in the Tauri app; block `start` while installing if that matters.
+        let job = RT.spawn_blocking(move || {
+            let exe = std::env::current_exe().map_err(|e| format!("UPDATE_INSTALL_FAILED:{e}"))?;
+            let target = updater::install_target(&exe);
+            updater::install(&zip, &target)?;
+            updater::relaunch(&target).map_err(|e| format!("UPDATE_INSTALL_FAILED:{e}"))
+        });
+        cx.spawn(async move |this, cx| {
+            let result = job.await.map_err(|e| e.to_string()).and_then(|r| r);
+            let _ = this.update(cx, |app, cx| match result {
+                Ok(()) => cx.quit(),
+                Err(e) => app.update_failed(&e, cx),
+            });
+        })
+        .detach();
+    }
+
+    fn update_failed(&mut self, error: &str, cx: &mut Context<Self>) {
+        self.installing = false;
+        self.update_status = tp("update.failed", &[("error", &translate_error(error))]);
+        cx.notify();
     }
 
     fn pal(&self) -> &'static Pal {
@@ -933,6 +1078,12 @@ fn menus() -> Vec<Menu> {
     ]
 }
 
+/// Whether `release` can be installed in place: release builds only, so `cargo run` never
+/// replaces the dev binary.
+fn installable(release: &updater::Release) -> bool {
+    release.asset.is_some() && !cfg!(debug_assertions)
+}
+
 /// macOS reads a bundle's icon from Info.plist; a bare binary (`cargo run`) needs it set.
 #[cfg(target_os = "macos")]
 fn set_dock_icon() {
@@ -959,6 +1110,9 @@ fn main() {
         .unwrap_or_else(std::env::temp_dir)
         .join("fanhuaji-gpui");
     // Cleared on every launch: Undo only covers this session, as in the Tauri app.
+    if let Ok(exe) = std::env::current_exe() {
+        updater::cleanup(&updater::install_target(&exe));
+    }
     let backups = Arc::new(Backups::new(cache.join("backups")).expect("backup folder"));
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))

@@ -226,5 +226,7 @@
   "status.filesUnit": "files",
   "modules.loadFailed": "Couldn't load the module list: {error}",
   "update.downloadAvailable": "New version {version} available. Download it from GitHub Releases.",
-  "files.tooMany": "Added the first {count} files only."
+  "files.tooMany": "Added the first {count} files only.",
+  "errors.UPDATE_SIGNATURE_INVALID": "The update's signature doesn't match, so it was not installed: {detail}",
+  "errors.UPDATE_INSTALL_FAILED": "Couldn't install the update: {detail}"
 }

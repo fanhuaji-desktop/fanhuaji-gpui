@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
-# Build target/release/bundle/Fanhuaji.app. Unsigned and not notarized: fine for local
-# use; a release workflow still has to codesign it.
+# Build target/release/bundle/Fanhuaji.app (with TARGET=<triple>: target/<triple>/release/...).
+# shortcut: unsigned and not notarized, so Gatekeeper warns on first launch; codesign it once
+# there is an Apple Developer ID.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-cargo build --release
+cargo build --release ${TARGET:+--target "$TARGET"}
 version=$(cargo pkgid | sed 's/.*[#@]//')
-app=target/release/bundle/Fanhuaji.app
+out=target/${TARGET:+$TARGET/}release
+app=$out/bundle/Fanhuaji.app
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp target/release/fanhuaji-gpui "$app/Contents/MacOS/"
+cp "$out/fanhuaji-gpui" "$app/Contents/MacOS/"
 cp assets/icon.icns "$app/Contents/Resources/"
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

@@ -1,0 +1,93 @@
+# Push a tag `v<version in Cargo.toml>` to publish a release. Each platform's zip is signed
+# with minisign; the app's updater only installs zips whose signature matches PUBLIC_KEY in
+# src/updater.rs. Needs the MINISIGN_SECRET_KEY secret (the unencrypted secret key file).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset: macos-aarch64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset: macos-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: windows-x86_64
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            asset: linux-x86_64
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: linux-aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Tag matches Cargo.toml
+        shell: bash
+        run: test "${GITHUB_REF_NAME}" = "v$(cargo pkgid | sed 's/.*[#@]//')"
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-x11-dev libwayland-dev libvulkan-dev libfontconfig-dev libx11-xcb-dev libzstd-dev
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          ./scripts/bundle-macos.sh
+          ditto -c -k --norsrc --keepParent "target/$TARGET/release/bundle/Fanhuaji.app" "Fanhuaji-${{ matrix.asset }}.zip"
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+          Compress-Archive -Path target/${{ matrix.target }}/release/fanhuaji-gpui.exe -DestinationPath Fanhuaji-${{ matrix.asset }}.zip
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+          (cd target/${{ matrix.target }}/release && zip "$GITHUB_WORKSPACE/Fanhuaji-${{ matrix.asset }}.zip" fanhuaji-gpui)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: Fanhuaji-${{ matrix.asset }}.zip
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Sign
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y minisign
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
+          for f in Fanhuaji-*.zip; do minisign -S -s "$RUNNER_TEMP/minisign.key" -m "$f"; done
+          rm "$RUNNER_TEMP/minisign.key"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" \
+            --title "繁化姬 $GITHUB_REF_NAME" --generate-notes \
+            Fanhuaji-*.zip Fanhuaji-*.zip.minisig
