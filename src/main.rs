@@ -1,4 +1,5 @@
 mod diff;
+mod files;
 mod i18n;
 mod queue;
 mod settings;
@@ -230,6 +231,8 @@ struct Fanhuaji {
     /// Files whose backup is being put back; a second Undo/Reconvert click is ignored.
     restoring: std::collections::HashSet<FileId>,
     dark: bool,
+    /// A one-off message for the status bar, e.g. that a drop was cut short.
+    notice: Option<String>,
     /// The update section's status line.
     update_status: String,
     /// A newer release found by a check, shown as a chip in the top bar.
@@ -365,6 +368,7 @@ impl Fanhuaji {
             batch: None,
             restoring: Default::default(),
             dark: false,
+            notice: None,
             update_status: String::new(),
             update: None,
             pre_replace,
@@ -458,11 +462,24 @@ impl Fanhuaji {
         cx.notify();
     }
 
+    /// Folders are walked off the UI thread: a large tree would otherwise freeze the window.
     fn add_paths(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        let paths = paths.to_vec();
+        let job = RT.spawn_blocking(move || files::expand(&paths, files::MAX_FILES));
+        cx.spawn(async move |this, cx| {
+            if let Ok((found, cut)) = job.await {
+                let _ = this.update(cx, |app, cx| app.add_found(found, cut, cx));
+            }
+        })
+        .detach();
+    }
+
+    fn add_found(&mut self, found: Vec<PathBuf>, cut: bool, cx: &mut Context<Self>) {
         self.armed = None;
         let mut first_added = None;
-        for path in paths.iter().filter(|p| is_supported(p)) {
-            if self.queue.add(path.clone()) && first_added.is_none() {
+        self.notice = cut.then(|| tp("files.tooMany", &[("count", &files::MAX_FILES.to_string())]));
+        for path in found {
+            if self.queue.add(path) && first_added.is_none() {
                 first_added = self.queue.files.last().map(|f| f.id);
             }
         }
@@ -482,7 +499,8 @@ impl Fanhuaji {
     fn pick_files(&mut self, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
-            directories: false,
+            // Folders are expanded to their supported files.
+            directories: true,
             multiple: true,
             prompt: Some(t("dialog.openFiles").into()),
         });

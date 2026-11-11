@@ -225,5 +225,6 @@
   "preview.emptyHint": "在左侧点选文件，即时显示逐句「原文 → 转换后」对照",
   "status.filesUnit": "档",
   "modules.loadFailed": "无法加载模块列表：{error}",
-  "update.downloadAvailable": "发现新版本 {version}，请前往 GitHub Releases 下载。"
+  "update.downloadAvailable": "发现新版本 {version}，请前往 GitHub Releases 下载。",
+  "files.tooMany": "只加入了前 {count} 个文件。"
 }

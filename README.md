@@ -45,3 +45,6 @@ The pure modules were ported test-first from the Tauri app's vitest suites.
 - Packaging: macOS `.app` only, unsigned; Windows and Linux builds are untested.
 - The file dialog has no type filter (GPUI's prompt doesn't take one); unsupported files
   are skipped when added.
+- Dropped or picked folders are expanded to their supported files, subfolders included
+  (hidden entries skipped, at most 1000 files per drop). The Tauri app queues the folder
+  itself, which then fails to convert.

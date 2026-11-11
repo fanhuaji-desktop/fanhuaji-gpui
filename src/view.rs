@@ -970,6 +970,9 @@ impl Fanhuaji {
                 d.child(stat(t("status.warning"), counts.warning, p.yellow))
             })
             .child(stat(t("status.error"), counts.error, p.accent))
+            .when_some(self.notice.clone(), |d, notice| {
+                d.child(div().text_color(c(p.yellow)).child(notice))
+            })
             .child(div().flex_1())
             // Only worth a button when it clears less than "clear list" would.
             .when(done > 0 && done < q.files.len(), |d| {
