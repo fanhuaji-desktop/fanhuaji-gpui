@@ -1,4 +1,5 @@
 mod diff;
+mod i18n;
 mod queue;
 mod settings;
 

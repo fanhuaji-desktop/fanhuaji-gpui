@@ -1,6 +1,7 @@
 //! Persisted user settings: what the Tauri app keeps under `fanhuaji-*` localStorage keys,
 //! stored here as one JSON file.
 
+use crate::i18n::Locale;
 use fanhuaji_core::ConvertParams;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -27,6 +28,15 @@ pub enum ModuleChoice {
     Disable,
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemePref {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
 pub struct Settings {
@@ -41,6 +51,9 @@ pub struct Settings {
     /// Only modules the user changed from Auto.
     pub modules: BTreeMap<String, ModuleChoice>,
     pub auto_convert: bool,
+    /// None: follow the system language.
+    pub locale: Option<Locale>,
+    pub theme: ThemePref,
 }
 
 /// The settings that change a conversion's output, to tell when a saved result is stale.
@@ -63,6 +76,8 @@ impl Default for Settings {
             protect_replace: String::new(),
             modules: BTreeMap::new(),
             auto_convert: true,
+            locale: None,
+            theme: ThemePref::System,
         }
     }
 }
@@ -155,6 +170,8 @@ mod tests {
         assert_eq!(s.naming, Naming::Auto);
         assert_eq!(s.save_folder, None);
         assert!(s.auto_convert, "auto-convert is on unless turned off");
+        assert_eq!(s.locale, None, "follows the system language until chosen");
+        assert_eq!(s.theme, ThemePref::System);
     }
 
     #[test]
@@ -184,6 +201,8 @@ mod tests {
             pre_replace: "a=b\nc=d".into(),
             modules: [("Smooth".into(), ModuleChoice::Disable)].into(),
             auto_convert: false,
+            locale: Some(Locale::En),
+            theme: ThemePref::Dark,
             ..Default::default()
         };
         s.save(&p).unwrap();

@@ -19,6 +19,15 @@ pub enum Status {
     Restored,
 }
 
+#[derive(Debug, Default, PartialEq)]
+pub struct Counts {
+    pub total: usize,
+    pub pending: usize,
+    pub success: usize,
+    pub warning: usize,
+    pub error: usize,
+}
+
 pub struct FileItem {
     pub id: FileId,
     pub path: PathBuf,
@@ -134,6 +143,31 @@ impl Queue {
     pub fn remove_completed(&mut self) {
         self.files
             .retain(|f| !f.is_finished() && f.status != Status::Restored);
+    }
+
+    pub fn counts(&self) -> Counts {
+        let mut c = Counts {
+            total: self.files.len(),
+            ..Counts::default()
+        };
+        for f in &self.files {
+            match f.status {
+                Status::Pending => c.pending += 1,
+                Status::Done(_) => c.success += 1,
+                Status::Warning(_) => c.warning += 1,
+                Status::Failed(_) => c.error += 1,
+                Status::Converting(_) | Status::Restored => {}
+            }
+        }
+        c
+    }
+
+    /// How many of `files` overwrote an original whose Undo would be lost if they left the list.
+    pub fn undoable<'a>(files: impl IntoIterator<Item = &'a FileItem>) -> usize {
+        files
+            .into_iter()
+            .filter(|f| f.overwritten && f.is_finished())
+            .count()
     }
 
     /// Remove one file; the file being converted stays.
@@ -274,6 +308,37 @@ mod tests {
         q.remove_completed();
         assert_eq!(q.files.len(), 1);
         assert_eq!(q.files[0].id, ids[1]);
+    }
+
+    #[test]
+    fn counts_files_by_status() {
+        let (q, _) = queue(&[
+            Status::Pending,
+            done(),
+            Status::Warning("w".into()),
+            Status::Failed("X".into()),
+            Status::Converting(None),
+            Status::Restored,
+        ]);
+        assert_eq!(
+            q.counts(),
+            Counts {
+                total: 6,
+                pending: 1,
+                success: 1,
+                warning: 1,
+                error: 1
+            }
+        );
+    }
+
+    #[test]
+    fn undoable_counts_finished_overwritten_files() {
+        let (mut q, _) = queue(&[done(), done(), Status::Restored]);
+        q.files[0].overwritten = true;
+        q.files[2].overwritten = true;
+        assert_eq!(Queue::undoable(&q.files), 1, "restored files have no Undo left");
+        assert_eq!(Queue::undoable(&q.files[1..]), 0);
     }
 
     #[test]
