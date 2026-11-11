@@ -427,6 +427,9 @@ impl Fanhuaji {
             ThemeMode::Light
         };
         Theme::change(mode, Some(window), cx);
+        // Always shown, so the module list and queue visibly scroll (the Tauri app styles
+        // permanent scrollbars).
+        Theme::global_mut(cx).scrollbar_mode = gpui_component::scroll::ScrollbarMode::Always;
         cx.notify();
     }
 

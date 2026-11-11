@@ -14,6 +14,7 @@ use gpui::{
 };
 use gpui_component::Icon;
 use gpui_component::input::{Input, Textarea};
+use gpui_component::scroll::ScrollableElement;
 use std::ops::Range;
 
 /// The toolbar's segment holds these; the rest live under "More", grouped as in the Tauri app.
@@ -548,7 +549,7 @@ impl Fanhuaji {
                     .id("queue-scroll")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
+                    .overflow_y_scrollbar()
                     .p(px(8.))
                     .child(drop_zone)
                     .children(cards),
@@ -831,7 +832,7 @@ impl Fanhuaji {
             .id("preview-body")
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
+            .overflow_y_scrollbar()
             .pt(px(6.))
             .pb(px(24.));
         let body = match &preview.body {
@@ -1197,7 +1198,7 @@ impl Fanhuaji {
                             .id("drawer-body")
                             .flex_1()
                             .min_h_0()
-                            .overflow_y_scroll()
+                            .overflow_y_scrollbar()
                             .child(body),
                     ),
             )
