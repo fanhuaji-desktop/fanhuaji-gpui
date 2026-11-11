@@ -39,7 +39,8 @@ actions!(
         ToggleFullscreen,
         SelectPrev,
         SelectNext,
-        RemoveSelected
+        RemoveSelected,
+        CloseSettings
     ]
 );
 
@@ -1012,6 +1013,12 @@ impl Render for Fanhuaji {
             .on_action(cx.listener(|app, _: &SelectPrev, _, cx| app.select_step(false, cx)))
             .on_action(cx.listener(|app, _: &SelectNext, _, cx| app.select_step(true, cx)))
             .on_action(cx.listener(|app, _: &RemoveSelected, _, cx| app.remove_selected(cx)))
+            .on_action(cx.listener(|app, _: &CloseSettings, _, cx| {
+                if app.show_settings {
+                    app.show_settings = false;
+                    app.refresh_preview(cx);
+                }
+            }))
             // Files can be dropped anywhere in the window, as in the Tauri app.
             .group("root")
             .on_drop(cx.listener(|app, paths: &ExternalPaths, _, cx| {
@@ -1956,6 +1963,7 @@ fn main() {
             KeyBinding::new("down", SelectNext, Some("FileList")),
             KeyBinding::new("backspace", RemoveSelected, Some("FileList")),
             KeyBinding::new("delete", RemoveSelected, Some("FileList")),
+            KeyBinding::new("escape", CloseSettings, Some("FileList")),
             KeyBinding::new(open, OpenFiles, None),
             KeyBinding::new(convert, Convert, None),
             KeyBinding::new(settings, OpenSettings, None),
