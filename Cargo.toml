@@ -1,0 +1,13 @@
+[package]
+name = "fanhuaji-gpui"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# shortcut: local path to the Tauri repo's core crate (PR #74); switch to a git dependency once it is merged.
+fanhuaji-core = { path = "../fanhuaji-tauri/src-tauri/core" }
+# runtime_shaders: compiles Metal shaders at launch, so building does not need full Xcode.
+gpui = { version = "0.2.2", features = ["runtime_shaders"] }
+reqwest = { version = "0.13", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
