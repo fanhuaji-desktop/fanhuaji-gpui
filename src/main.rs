@@ -4,25 +4,23 @@ mod queue;
 mod settings;
 mod theme;
 mod updater;
+mod view;
 
 use diff::Row;
 use fanhuaji_core::{
     Backups, ConvertFileResult, ConvertParams, EpubProgress, ModuleInfo, PreviewResult,
 };
 use gpui::{
-    AnyElement, App, Bounds, Context, Entity, ExternalPaths, FocusHandle, HighlightStyle,
-    KeyBinding, Menu, MenuItem, OsAction, PathPromptOptions, SharedString, StyledText,
-    Subscription, SystemMenuType, TitlebarOptions, Window, WindowAppearance, WindowBounds,
-    WindowOptions, actions, div, prelude::*, px, rgb, size,
+    App, Bounds, Context, Entity, ExternalPaths, FocusHandle, KeyBinding, Menu, MenuItem, OsAction,
+    PathPromptOptions, SharedString, Subscription, SystemMenuType, TitlebarOptions, Window,
+    WindowAppearance, WindowBounds, WindowOptions, actions, prelude::*, px, size,
 };
 use gpui_component::WindowExt;
-use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_component::switch::Switch;
+use gpui_component::input::{InputEvent, InputState, TextareaState};
 use gpui_component::{Root, Theme, ThemeMode};
 use i18n::{Locale, t, tp, translate_error};
 use queue::{FileId, Queue, Status};
-use settings::{ModuleChoice, Naming, OutputKey, Settings, ThemePref};
-use std::ops::Range;
+use settings::{OutputKey, Settings, ThemePref};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use theme::Pal;
@@ -47,19 +45,6 @@ actions!(
 /// fanhuaji-core is built on reqwest + tokio, while GPUI runs its own executor.
 static RT: LazyLock<tokio::runtime::Runtime> =
     LazyLock::new(|| tokio::runtime::Runtime::new().expect("tokio runtime"));
-
-const CONVERTERS: &[&str] = &[
-    "Traditional",
-    "Taiwan",
-    "Hongkong",
-    "Simplified",
-    "China",
-    "Bopomofo",
-    "Mars",
-    "Pinyin",
-    "WikiSimplified",
-    "WikiTraditional",
-];
 
 /// Simplified output gets a Simplified Chinese face: a Traditional font would draw
 /// Traditional-style glyphs for characters both scripts share.
@@ -112,6 +97,11 @@ fn ext_label(path: &Path) -> String {
 
 fn converter_label(key: &str) -> String {
     t(&format!("converter.short.{key}"))
+}
+
+/// "繁化姬 0.1.0", as the Tauri app titles its window.
+fn window_title() -> String {
+    format!("{} {}", t("app.title"), env!("CARGO_PKG_VERSION"))
 }
 
 fn shortcut(key: &str) -> String {
@@ -201,6 +191,13 @@ enum Modules {
 struct MainView(gpui::WeakEntity<Fanhuaji>);
 impl gpui::Global for MainView {}
 
+/// The toolbar popover that is open, if any.
+#[derive(Clone, Copy, PartialEq)]
+enum Popover {
+    Mode,
+    Output,
+}
+
 /// A destructive click waiting for its confirming second click, as in the Tauri app.
 #[derive(Clone, Copy, PartialEq)]
 enum Armed {
@@ -221,6 +218,7 @@ struct Fanhuaji {
     /// Bumped per preview request, so a slow response can't replace a newer one.
     preview_gen: u64,
     show_settings: bool,
+    popover: Option<Popover>,
     tab: Tab,
     modules: Modules,
     module_category: String,
@@ -357,6 +355,7 @@ impl Fanhuaji {
             preview: None,
             preview_gen: 0,
             show_settings: false,
+            popover: None,
             tab: Tab::Replace,
             modules: Modules::Loading,
             module_category: String::new(),
@@ -432,7 +431,7 @@ impl Fanhuaji {
     /// Re-translate what isn't rebuilt on render: menus, window title, placeholders.
     fn apply_locale(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         cx.set_menus(menus());
-        window.set_window_title(&t("app.title"));
+        window.set_window_title(&window_title());
         for (state, key) in [
             (&self.pre_replace, "settings.replace.pairPlaceholder"),
             (&self.post_replace, "settings.replace.pairPlaceholder"),
@@ -911,1093 +910,6 @@ fn menus() -> Vec<Menu> {
     ]
 }
 
-fn button(
-    p: &Pal,
-    id: impl Into<gpui::ElementId>,
-    label: impl Into<SharedString>,
-    primary: bool,
-) -> gpui::Stateful<gpui::Div> {
-    let (bg, fg, hover) = if primary {
-        (p.accent, p.on_accent, p.accent_hover)
-    } else {
-        (p.surface, p.text, p.hover)
-    };
-    div()
-        .id(id)
-        .px_4()
-        .py_1p5()
-        .rounded_md()
-        .border_1()
-        .border_color(rgb(if primary { p.accent } else { p.border }))
-        .bg(rgb(bg))
-        .text_color(rgb(fg))
-        .cursor_pointer()
-        .hover(move |s| s.bg(rgb(hover)))
-        .child(label.into())
-}
-
-fn chip(
-    p: &Pal,
-    id: impl Into<gpui::ElementId>,
-    label: impl Into<SharedString>,
-    selected: bool,
-) -> gpui::Stateful<gpui::Div> {
-    let hover = p.hover;
-    div()
-        .id(id)
-        .px_3()
-        .py_1()
-        .rounded_full()
-        .border_1()
-        .border_color(rgb(if selected { p.accent } else { p.border }))
-        .bg(rgb(if selected { p.accent_soft } else { p.surface }))
-        .when(!selected, |d| d.hover(move |s| s.bg(rgb(hover))))
-        .cursor_pointer()
-        .child(label.into())
-}
-
-fn section(title: impl Into<SharedString>) -> gpui::Div {
-    div().flex().flex_col().gap_2().child(
-        div()
-            .text_sm()
-            .font_weight(gpui::FontWeight::SEMIBOLD)
-            .child(title.into()),
-    )
-}
-
-fn link(
-    p: &Pal,
-    id: &'static str,
-    label: impl Into<SharedString>,
-    url: &'static str,
-) -> impl IntoElement {
-    div()
-        .id(id)
-        .text_sm()
-        .text_color(rgb(p.accent))
-        .cursor_pointer()
-        .hover(|s| s.underline())
-        .child(label.into())
-        .on_click(move |_, _, cx| cx.open_url(url))
-}
-
-impl Render for Fanhuaji {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let p = self.pal();
-        let converters = div()
-            .flex_1()
-            .flex()
-            .flex_wrap()
-            .gap_2()
-            .children(CONVERTERS.iter().map(|&key| {
-                chip(p, key, converter_label(key), self.settings.converter == key).on_click(
-                    cx.listener(move |app, _, _, cx| {
-                        if !app.queue.converting() && app.settings.converter != key {
-                            app.settings.converter = key.into();
-                            app.settings_changed(cx);
-                            app.refresh_preview(cx);
-                        }
-                    }),
-                )
-            }));
-        let update_chip = self.update.as_ref().map(|r| {
-            let url = r.url.clone();
-            chip(
-                p,
-                "update-chip",
-                tp("update.chip", &[("version", &r.version)]),
-                true,
-            )
-            .on_click(move |_, _, cx| cx.open_url(&url))
-        });
-        let top = div()
-            .flex()
-            .items_start()
-            .gap_3()
-            .child(converters)
-            .children(update_chip)
-            .child(
-                button(
-                    p,
-                    "settings",
-                    t(if self.show_settings {
-                        "settings.close"
-                    } else {
-                        "header.settings"
-                    }),
-                    false,
-                )
-                .on_click(cx.listener(|app, _, window, cx| {
-                    if app.show_settings {
-                        app.close_settings(window, cx);
-                    } else {
-                        app.open_settings(app.tab, cx);
-                    }
-                })),
-            );
-
-        div()
-            .id("root")
-            .track_focus(&self.focus)
-            .on_action(cx.listener(|app, _: &OpenFiles, _, cx| app.pick_files(cx)))
-            .on_action(cx.listener(|app, _: &Convert, _, cx| app.start(None, cx)))
-            .on_action(
-                cx.listener(|app, _: &OpenSettings, _, cx| app.open_settings(Tab::Replace, cx)),
-            )
-            .on_action(cx.listener(|app, _: &About, _, cx| app.open_settings(Tab::General, cx)))
-            .on_action(cx.listener(|app, _: &Quit, window, cx| app.request_quit(window, cx)))
-            .on_action(|_: &Minimize, window, _| window.minimize_window())
-            .on_action(|_: &ToggleFullscreen, window, _| window.toggle_fullscreen())
-            // Text inputs have the deeper "Input" context, so arrows and delete stay theirs there.
-            .key_context("FileList")
-            // Only when the window itself has focus: a text field passes Backspace up when
-            // its cursor is at the start, which must not remove a file.
-            .on_action(cx.listener(|app, _: &SelectPrev, window, cx| {
-                if app.focus.is_focused(window) {
-                    app.select_step(false, cx)
-                }
-            }))
-            .on_action(cx.listener(|app, _: &SelectNext, window, cx| {
-                if app.focus.is_focused(window) {
-                    app.select_step(true, cx)
-                }
-            }))
-            .on_action(cx.listener(|app, _: &RemoveSelected, window, cx| {
-                if app.focus.is_focused(window) {
-                    app.remove_selected(cx)
-                }
-            }))
-            .on_action(
-                cx.listener(|app, _: &CloseSettings, window, cx| app.close_settings(window, cx)),
-            )
-            // Files can be dropped anywhere in the window, as in the Tauri app.
-            .group("root")
-            .on_drop(cx.listener(|app, paths: &ExternalPaths, _, cx| {
-                app.add_paths(paths.paths(), cx);
-            }))
-            .relative()
-            .size_full()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .p_4()
-            .bg(rgb(p.bg))
-            .text_color(rgb(p.text))
-            .child(top)
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .gap_3()
-                    .child(self.render_list(cx))
-                    .child(if self.show_settings {
-                        self.render_settings(cx).into_any_element()
-                    } else {
-                        self.render_preview(cx).into_any_element()
-                    }),
-            )
-            .child(self.render_status(cx))
-            .child(self.render_drop_overlay())
-    }
-}
-
-impl Fanhuaji {
-    fn file_note(&self, f: &queue::FileItem) -> (String, u32) {
-        let p = self.pal();
-        if self.armed == Some(Armed::Remove(f.id)) {
-            return (t("file.removeConfirm"), p.danger);
-        }
-        match &f.status {
-            Status::Pending => (ext_label(&f.path), p.muted),
-            Status::Converting(None) => (t("file.converting"), p.accent),
-            Status::Converting(Some((i, n))) => {
-                let name = if f.chapter.is_empty() {
-                    String::new()
-                } else {
-                    format!(" {}", f.chapter)
-                };
-                (
-                    tp(
-                        "file.convertingChapter",
-                        &[
-                            ("current", &i.to_string()),
-                            ("total", &n.to_string()),
-                            ("name", &name),
-                        ],
-                    ),
-                    p.accent,
-                )
-            }
-            Status::Done(_) if f.overwritten => (t("file.overwritten"), p.success),
-            Status::Done(out) => (tp("file.savedAs", &[("name", out)]), p.success),
-            Status::Warning(w) => (
-                tp(
-                    "file.convertDoneWithWarnings",
-                    &[("warnings", &translate_error(w))],
-                ),
-                p.warning,
-            ),
-            Status::Failed(e) => (translate_error(e), p.danger),
-            Status::Restored => (t("file.restored"), p.muted),
-        }
-    }
-
-    /// Shown only while files are dragged over the window: says what dropping will do.
-    fn render_drop_overlay(&self) -> impl IntoElement {
-        let p = self.pal();
-        let mode = converter_label(&self.settings.converter);
-        let text = if !self.settings.auto_convert {
-            t("drop.release")
-        } else if self.settings.naming == Naming::Overwrite {
-            tp("drop.releaseOverwrite", &[("mode", &mode)])
-        } else {
-            tp("drop.releaseConvert", &[("mode", &mode)])
-        };
-        div()
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .opacity(0.)
-            .group_drag_over::<ExternalPaths>("root", |s| s.opacity(1.))
-            .child(
-                div()
-                    .px_6()
-                    .py_4()
-                    .rounded_lg()
-                    .border_2()
-                    .border_dashed()
-                    .border_color(rgb(p.accent))
-                    .bg(rgb(p.surface))
-                    .text_lg()
-                    .text_color(rgb(p.accent))
-                    .child(text),
-            )
-    }
-
-    fn render_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let p = self.pal();
-        let (accent, drop) = (p.accent, p.drop);
-        div()
-            .id("files")
-            .w(px(320.))
-            .flex_none()
-            .flex()
-            .flex_col()
-            .overflow_y_scroll()
-            .rounded_lg()
-            .border_2()
-            .border_dashed()
-            .border_color(rgb(p.border))
-            .group_drag_over::<ExternalPaths>("root", move |s| {
-                s.border_color(rgb(accent)).bg(rgb(drop))
-            })
-            .when(self.queue.files.is_empty(), |d| {
-                d.items_center()
-                    .justify_center()
-                    .gap_2()
-                    .cursor_pointer()
-                    .on_click(cx.listener(|app, _, _, cx| app.pick_files(cx)))
-                    .child(div().text_lg().child(t("drop.title")))
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(rgb(p.muted))
-                            .child(tp("drop.shortcut", &[("key", &shortcut("o"))])),
-                    )
-                    .child(
-                        div()
-                            .px_6()
-                            .text_xs()
-                            .text_center()
-                            .text_color(rgb(p.faint))
-                            .child(t("drop.formats")),
-                    )
-            })
-            .children(self.queue.files.iter().map(|f| {
-                let id = f.id;
-                let name = f
-                    .path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                let (note, color) = self.file_note(f);
-                let removable = !matches!(f.status, Status::Converting(_));
-                let armed = self.armed == Some(Armed::Remove(id));
-                let small_action = |id: (&'static str, FileId), label: String, danger: bool| {
-                    let (text, hover_bg) = (p.text, p.divider);
-                    div()
-                        .id(id)
-                        .px_1()
-                        .rounded_sm()
-                        .text_sm()
-                        .text_color(rgb(if danger { p.danger } else { p.muted }))
-                        .hover(move |s| s.text_color(rgb(text)).bg(rgb(hover_bg)))
-                        .child(label)
-                };
-                let (selected_bg, hover) = (p.accent_soft, p.hover);
-                div()
-                    .id(("file", id))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(rgb(p.divider))
-                    .cursor_pointer()
-                    .when(self.selected == Some(id), |d| d.bg(rgb(selected_bg)))
-                    .hover(move |s| s.bg(rgb(hover)))
-                    .on_click(cx.listener(move |app, _, window, cx| {
-                        window.focus(&app.focus, cx);
-                        app.select(id, cx);
-                    }))
-                    .child(
-                        div()
-                            .flex_none()
-                            .w(px(40.))
-                            .py_0p5()
-                            .rounded_sm()
-                            .border_1()
-                            .border_color(rgb(p.border))
-                            .text_xs()
-                            .text_center()
-                            .text_color(rgb(p.muted))
-                            .child(ext_label(&f.path)),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(div().truncate().child(name))
-                            .child(div().text_sm().text_color(rgb(color)).child(note)),
-                    )
-                    .when(f.is_finished() && f.output.is_some(), |d| {
-                        d.child(small_action(("reveal", id), "📂".into(), false).on_click(
-                            cx.listener(move |app, _, _, cx| {
-                                cx.stop_propagation();
-                                app.reveal(id, cx);
-                            }),
-                        ))
-                    })
-                    .when(
-                        f.overwritten && f.is_finished() && !self.restoring.contains(&id),
-                        |d| {
-                            d.child(small_action(("undo", id), t("file.undo"), false).on_click(
-                                cx.listener(move |app, _, _, cx| {
-                                    cx.stop_propagation();
-                                    app.restore(id, cx, |_, _| {});
-                                }),
-                            ))
-                        },
-                    )
-                    .when(removable, |d| {
-                        let label = if armed { "⚠" } else { "✕" };
-                        d.child(small_action(("remove", id), label.into(), armed).on_click(
-                            cx.listener(move |app, _, _, cx| {
-                                cx.stop_propagation();
-                                let undoable = Queue::undoable(app.queue.get(id));
-                                app.confirm_undo_loss(Armed::Remove(id), undoable, cx, |app, _| {
-                                    app.queue.remove(id)
-                                });
-                            }),
-                        ))
-                    })
-            }))
-    }
-
-    fn render_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let p = self.pal();
-        let q = &self.queue;
-        let converting = q.converting();
-        let c = q.counts();
-        let done = q
-            .files
-            .iter()
-            .filter(|f| f.is_finished() || f.status == Status::Restored)
-            .count();
-        let stat = |label: &str, n: usize, color: u32| {
-            div()
-                .flex()
-                .gap_1()
-                .child(div().text_color(rgb(p.muted)).child(t(label)))
-                .child(div().text_color(rgb(color)).child(n.to_string()))
-        };
-        let armed_label = |armed: Armed, key: &str, leaving: usize| {
-            if self.armed == Some(armed) {
-                tp("status.confirmClear", &[("count", &leaving.to_string())])
-            } else {
-                t(key)
-            }
-        };
-        let progress = self.batch.map(|(d, n)| d as f32 / n.max(1) as f32);
-
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .when_some(progress, |d, ratio| {
-                d.child(
-                    div()
-                        .h(px(3.))
-                        .w_full()
-                        .rounded_full()
-                        .bg(rgb(p.divider))
-                        .child(
-                            div()
-                                .h_full()
-                                .rounded_full()
-                                .bg(rgb(p.accent))
-                                .w(gpui::relative(ratio)),
-                        ),
-                )
-            })
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .flex()
-                            .gap_3()
-                            .text_sm()
-                            .when(c.total > 0, |d| {
-                                d.child(stat("status.success", c.success, p.success))
-                                    .when(c.warning > 0, |d| {
-                                        d.child(stat("status.warning", c.warning, p.warning))
-                                    })
-                                    .child(stat("status.error", c.error, p.danger))
-                                    .child(div().text_color(rgb(p.muted)).child(tp(
-                                        "queue.count",
-                                        &[("count", &c.total.to_string())],
-                                    )))
-                            }),
-                    )
-                    .child(
-                        button(p, "add", t("menu.openFiles"), false)
-                            .on_click(cx.listener(|app, _, _, cx| app.pick_files(cx))),
-                    )
-                    // Only worth a button when it clears less than "clear list" would.
-                    .when(done > 0 && done < q.files.len(), |d| {
-                        let leaving = Queue::undoable(q.files.iter().filter(|f| f.is_finished()));
-                        d.child(
-                            button(
-                                p,
-                                "clear-done",
-                                armed_label(Armed::ClearDone, "status.clearDone", leaving),
-                                false,
-                            )
-                            .on_click(cx.listener(
-                                move |app, _, _, cx| {
-                                    app.confirm_undo_loss(
-                                        Armed::ClearDone,
-                                        leaving,
-                                        cx,
-                                        |app, _| app.queue.remove_completed(),
-                                    );
-                                },
-                            )),
-                        )
-                    })
-                    // Clearing mid-batch would hide files the running loop is still writing.
-                    .when(!converting && !q.files.is_empty(), |d| {
-                        let leaving = Queue::undoable(&q.files);
-                        d.child(
-                            button(
-                                p,
-                                "clear",
-                                armed_label(Armed::ClearAll, "status.clear", leaving),
-                                false,
-                            )
-                            .on_click(cx.listener(
-                                move |app, _, _, cx| {
-                                    app.confirm_undo_loss(
-                                        Armed::ClearAll,
-                                        leaving,
-                                        cx,
-                                        |app, _| app.queue.files.clear(),
-                                    );
-                                },
-                            )),
-                        )
-                    })
-                    .when(!converting && c.error > 0, |d| {
-                        d.child(
-                            button(p, "retry", t("status.retry"), false).on_click(cx.listener(
-                                |app, _, _, cx| {
-                                    app.queue.reset_errors();
-                                    app.start(None, cx);
-                                },
-                            )),
-                        )
-                    })
-                    .when(converting, |d| {
-                        let stopping = q.stop_requested();
-                        d.child(
-                            button(p, "stop", t("status.stop"), false)
-                                .when(stopping, |b| b.opacity(0.5))
-                                .on_click(cx.listener(|app, _, _, cx| {
-                                    app.queue.stop();
-                                    cx.notify();
-                                })),
-                        )
-                    })
-                    .when(!converting && c.pending > 0, |d| {
-                        d.child(
-                            button(
-                                p,
-                                "start",
-                                format!("{} ({})", t("status.convert"), c.pending),
-                                true,
-                            )
-                            .on_click(cx.listener(|app, _, _, cx| app.start(None, cx))),
-                        )
-                    }),
-            )
-    }
-
-    fn render_preview(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let p = self.pal();
-        let pane = div()
-            .id("preview")
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .overflow_y_scroll()
-            .rounded_lg()
-            .border_1()
-            .border_color(rgb(p.border))
-            .bg(rgb(p.surface));
-        let Some(preview) = &self.preview else {
-            return pane
-                .items_center()
-                .justify_center()
-                .gap_2()
-                .child(div().text_lg().child(t("preview.emptyTitle")))
-                .child(
-                    div()
-                        .px_8()
-                        .text_sm()
-                        .text_center()
-                        .text_color(rgb(p.muted))
-                        .child(t("preview.emptyHint")),
-                );
-        };
-        // A finished file converted with other output settings than the current ones.
-        let stale = self
-            .selected
-            .and_then(|id| self.queue.get(id))
-            .filter(|f| f.is_finished() && !self.queue.converting())
-            .and_then(|f| f.saved.as_ref())
-            .is_some_and(|(_, key)| *key != self.settings.output_key());
-        let name = self
-            .selected
-            .and_then(|id| self.queue.get(id))
-            .and_then(|f| f.path.file_name())
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let pane = pane
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_0p5()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(rgb(p.divider))
-                    .child(div().truncate().child(name))
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(rgb(p.muted))
-                            .child(preview.stats.clone()),
-                    ),
-            )
-            .when(stale, |d| {
-                d.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .px_3()
-                        .py_2()
-                        .bg(rgb(p.row_replace))
-                        .text_sm()
-                        .child(div().flex_1().child(t("preview.stale")))
-                        .child(
-                            button(p, "reconvert", t("preview.reconvert"), false).on_click(
-                                cx.listener(|app, _, _, cx| {
-                                    if let Some(id) = app.selected {
-                                        app.reconvert(id, cx);
-                                    }
-                                }),
-                            ),
-                        ),
-                )
-            });
-        match &preview.body {
-            PreviewBody::Message(m) => {
-                pane.child(div().p_4().text_color(rgb(p.muted)).child(m.clone()))
-            }
-            PreviewBody::Error(m) => pane.child(
-                div()
-                    .p_4()
-                    .text_color(rgb(p.danger))
-                    .child(format!("⚠ {m}")),
-            ),
-            PreviewBody::Diff { rows, simplified } => {
-                let mut line = 0;
-                pane.children(rows.iter().map(|row| {
-                    if !matches!(row, Row::Delete(_)) {
-                        line += 1;
-                    }
-                    diff_row(p, row, line, *simplified)
-                }))
-            }
-        }
-    }
-
-    fn render_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let p = self.pal();
-        let tabs = div().flex().gap_2().children(
-            [
-                (Tab::Replace, "settings.tab.replace"),
-                (Tab::Modules, "settings.tab.modules"),
-                (Tab::General, "settings.tab.general"),
-            ]
-            .map(|(tab, key)| {
-                chip(p, key, t(key), self.tab == tab).on_click(cx.listener(move |app, _, _, cx| {
-                    app.tab = tab;
-                    cx.notify();
-                }))
-            }),
-        );
-        let body = match self.tab {
-            Tab::Replace => section(t("settings.replace.title"))
-                .gap_3()
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(rgb(p.muted))
-                        .child(t("settings.replace.preLabel")),
-                )
-                .child(Textarea::new(&self.pre_replace))
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(rgb(p.muted))
-                        .child(t("settings.replace.postLabel")),
-                )
-                .child(Textarea::new(&self.post_replace))
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(rgb(p.muted))
-                        .child(t("settings.replace.protectLabel")),
-                )
-                .child(Textarea::new(&self.protect_replace))
-                .into_any_element(),
-            Tab::Modules => self.render_modules(cx).into_any_element(),
-            Tab::General => self.render_general(cx).into_any_element(),
-        };
-        div()
-            .id("settings-pane")
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .p_4()
-            .overflow_y_scroll()
-            .rounded_lg()
-            .border_1()
-            .border_color(rgb(p.border))
-            .bg(rgb(p.surface))
-            .child(tabs)
-            .child(body)
-    }
-
-    fn render_modules(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let p = self.pal();
-        let list = match &self.modules {
-            Modules::Loading => {
-                return section(t("settings.modules.title"))
-                    .child(div().text_color(rgb(p.muted)).child(t("preview.loading")));
-            }
-            Modules::Failed(e) => {
-                return section(t("settings.modules.title")).child(
-                    div()
-                        .text_color(rgb(p.danger))
-                        .child(tp("modules.loadFailed", &[("error", &translate_error(e))])),
-                );
-            }
-            Modules::Ready(list) => list,
-        };
-        let mut categories: Vec<&str> = Vec::new();
-        for m in list {
-            if !categories.contains(&m.category.as_str()) {
-                categories.push(&m.category);
-            }
-        }
-        let cats = div()
-            .flex()
-            .flex_wrap()
-            .gap_2()
-            .children(categories.iter().enumerate().map(|(i, &c)| {
-                let label = if c.is_empty() {
-                    t("module.categoryUnknown")
-                } else {
-                    c.to_string()
-                };
-                let owned = c.to_string();
-                chip(p, ("cat", i), label, self.module_category == c).on_click(cx.listener(
-                    move |app, _, _, cx| {
-                        app.module_category = owned.clone();
-                        cx.notify();
-                    },
-                ))
-            }));
-        let rows = list
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| m.category == self.module_category)
-            .map(|(i, m)| {
-                let current = self
-                    .settings
-                    .modules
-                    .get(&m.key)
-                    .copied()
-                    .unwrap_or_default();
-                let choices = [
-                    (ModuleChoice::Auto, "module.auto", "mod-auto"),
-                    (ModuleChoice::Enable, "module.enable", "mod-on"),
-                    (ModuleChoice::Disable, "module.disable", "mod-off"),
-                ];
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(rgb(p.divider))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(m.name.clone())
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(rgb(p.muted))
-                                    .child(m.description.clone()),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap_1()
-                            .children(choices.map(|(choice, key, tag)| {
-                                let module = m.key.clone();
-                                chip(p, (tag, i), t(key), current == choice).on_click(cx.listener(
-                                    move |app, _, _, cx| {
-                                        if choice == ModuleChoice::Auto {
-                                            app.settings.modules.remove(&module);
-                                        } else {
-                                            app.settings.modules.insert(module.clone(), choice);
-                                        }
-                                        app.settings_changed(cx);
-                                    },
-                                ))
-                            })),
-                    )
-            });
-        section(t("settings.modules.title"))
-            .gap_3()
-            .child(cats)
-            .child(div().flex().flex_col().children(rows))
-    }
-
-    fn render_general(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let p = self.pal();
-        let s = &self.settings;
-        let folder = s
-            .save_folder
-            .as_ref()
-            .map(|p| p.to_string_lossy().into_owned());
-        let naming_desc = match s.naming {
-            Naming::Auto => "settings.save.naming.autoDesc",
-            Naming::Suffix => "settings.save.naming.suffixDesc",
-            Naming::Overwrite => "settings.save.naming.overwriteDesc",
-        };
-        div()
-            .flex()
-            .flex_col()
-            .gap_5()
-            .child(
-                section(t("naming.when")).child(
-                    Switch::new("auto-convert")
-                        .checked(s.auto_convert)
-                        .label(t("settings.behavior.autoConvert"))
-                        .on_click(cx.listener(|app, checked: &bool, _, cx| {
-                            app.settings.auto_convert = *checked;
-                            app.settings_changed(cx);
-                        })),
-                ),
-            )
-            .child(
-                section(t("settings.save.folderLabel"))
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .child(
-                                chip(p, "folder-same", t("settings.save.same"), folder.is_none())
-                                    .on_click(cx.listener(|app, _, _, cx| {
-                                        app.settings.save_folder = None;
-                                        app.settings_changed(cx);
-                                    })),
-                            )
-                            .child(
-                                chip(
-                                    p,
-                                    "folder-custom",
-                                    t("settings.save.custom"),
-                                    folder.is_some(),
-                                )
-                                .on_click(cx.listener(|app, _, _, cx| app.pick_save_folder(cx))),
-                            ),
-                    )
-                    .when_some(folder, |d, f| {
-                        d.child(div().text_sm().text_color(rgb(p.muted)).child(f))
-                    }),
-            )
-            .child(
-                section(t("naming.title"))
-                    .child(
-                        div().flex().gap_2().children(
-                            [
-                                (Naming::Auto, "settings.save.naming.auto"),
-                                (Naming::Suffix, "settings.save.naming.suffix"),
-                                (Naming::Overwrite, "settings.save.naming.overwrite"),
-                            ]
-                            .map(|(naming, key)| {
-                                chip(p, key, t(key), s.naming == naming).on_click(cx.listener(
-                                    move |app, _, _, cx| {
-                                        app.settings.naming = naming;
-                                        app.settings_changed(cx);
-                                    },
-                                ))
-                            }),
-                        ),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(rgb(if s.naming == Naming::Overwrite {
-                                p.warning
-                            } else {
-                                p.muted
-                            }))
-                            .child(t(naming_desc)),
-                    )
-                    .when(s.naming == Naming::Suffix, |d| {
-                        d.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(div().text_sm().child(t("settings.save.suffixLabel")))
-                                .child(div().w(px(200.)).child(Input::new(&self.custom_suffix))),
-                        )
-                    }),
-            )
-            .child(
-                section(t("settings.language.title")).child(div().flex().gap_2().children(
-                    i18n::LOCALES.map(|(locale, name)| {
-                        chip(p, name, name, i18n::locale() == locale).on_click(cx.listener(
-                            move |app, _, window, cx| {
-                                i18n::set_locale(locale);
-                                app.settings.locale = Some(locale);
-                                app.settings_changed(cx);
-                                app.apply_locale(window, cx);
-                            },
-                        ))
-                    }),
-                )),
-            )
-            .child(
-                section(t("settings.appearance.title")).child(
-                    div().flex().gap_2().children(
-                        [
-                            (ThemePref::System, "theme.system"),
-                            (ThemePref::Light, "theme.light"),
-                            (ThemePref::Dark, "theme.dark"),
-                        ]
-                        .map(|(pref, key)| {
-                            chip(p, key, t(key), s.theme == pref).on_click(cx.listener(
-                                move |app, _, window, cx| {
-                                    app.settings.theme = pref;
-                                    app.settings_changed(cx);
-                                    app.apply_theme(window, cx);
-                                },
-                            ))
-                        }),
-                    ),
-                ),
-            )
-            .child(
-                section(t("settings.update.title")).child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_3()
-                        .child(
-                            button(p, "check-update", t("settings.update.check"), false).on_click(
-                                cx.listener(|app, _, _, cx| app.check_updates(false, cx)),
-                            ),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(rgb(p.muted))
-                                .child(self.update_status.clone()),
-                        )
-                        .when_some(self.update.as_ref(), |d, r| {
-                            let url = r.url.clone();
-                            d.child(
-                                div()
-                                    .id("release-link")
-                                    .text_sm()
-                                    .text_color(rgb(p.accent))
-                                    .cursor_pointer()
-                                    .child("GitHub Releases")
-                                    .on_click(move |_, _, cx| cx.open_url(&url)),
-                            )
-                        }),
-                ),
-            )
-            .child(
-                section(t("settings.about.title"))
-                    .child(div().text_sm().child(format!(
-                        "{} {}",
-                        t("settings.about.version"),
-                        env!("CARGO_PKG_VERSION")
-                    )))
-                    .child(
-                        div()
-                            .flex()
-                            .gap_4()
-                            .child(link(
-                                p,
-                                "link-site",
-                                "zhconvert.org",
-                                "https://zhconvert.org",
-                            ))
-                            .child(link(
-                                p,
-                                "link-license",
-                                t("settings.about.license"),
-                                "https://docs.zhconvert.org/license/",
-                            ))
-                            .child(link(p, "link-repo", "GitHub", REPO_URL)),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(rgb(p.muted))
-                            .child(t("settings.about.apiNotice")),
-                    ),
-            )
-    }
-}
-
-fn marked_text(text: &str, ranges: &[Range<usize>], mark: u32) -> StyledText {
-    let style = HighlightStyle {
-        background_color: Some(rgb(mark).into()),
-        ..Default::default()
-    };
-    let text = if text.is_empty() { " " } else { text };
-    StyledText::new(text.to_string()).with_highlights(ranges.iter().map(|r| (r.clone(), style)))
-}
-
-fn diff_row(p: &Pal, row: &Row, line: usize, simplified: bool) -> AnyElement {
-    let conv = |el: StyledText| {
-        // macOS ships PingFang SC; elsewhere the name misses and the default face is used.
-        div()
-            .when(simplified, |d| d.font_family("PingFang SC"))
-            .child(el)
-    };
-    let (num, bg, body): (String, u32, AnyElement) = match row {
-        Row::Equal(t) => (
-            line.to_string(),
-            p.surface,
-            conv(marked_text(t, &[], 0)).into_any_element(),
-        ),
-        Row::Replace { orig, conv: c } => (
-            line.to_string(),
-            p.row_replace,
-            div()
-                .flex()
-                .flex_col()
-                .child(div().text_color(rgb(p.faint)).child(marked_text(
-                    &orig.text,
-                    &orig.changed,
-                    p.mark_orig,
-                )))
-                .child(conv(marked_text(&c.text, &c.changed, p.mark_conv)))
-                .into_any_element(),
-        ),
-        Row::Insert(t) => (
-            line.to_string(),
-            p.row_insert,
-            conv(marked_text(
-                t,
-                std::slice::from_ref(&(0..t.len())),
-                p.mark_conv,
-            ))
-            .into_any_element(),
-        ),
-        Row::Delete(t) => (
-            "−".into(),
-            p.row_delete,
-            div()
-                .text_color(rgb(p.faint))
-                .child(marked_text(
-                    t,
-                    std::slice::from_ref(&(0..t.len())),
-                    p.mark_orig,
-                ))
-                .into_any_element(),
-        ),
-    };
-    div()
-        .flex()
-        .gap_3()
-        .px_3()
-        .py_0p5()
-        .bg(rgb(bg))
-        .child(
-            div()
-                .w(px(36.))
-                .flex_none()
-                .text_right()
-                .text_color(rgb(p.faint))
-                .child(num),
-        )
-        .child(div().flex_1().min_w_0().child(body))
-        .into_any_element()
-}
-
 fn main() {
     let config = dirs::config_dir()
         .unwrap_or_else(std::env::temp_dir)
@@ -2012,64 +924,66 @@ fn main() {
         .build()
         .expect("HTTP client");
 
-    gpui_platform::application().run(move |cx: &mut App| {
-        gpui_component::init(cx);
-        let [open, convert, settings, quit, minimize, fullscreen] = KEYS;
-        cx.bind_keys([
-            KeyBinding::new("up", SelectPrev, Some("FileList")),
-            KeyBinding::new("down", SelectNext, Some("FileList")),
-            KeyBinding::new("backspace", RemoveSelected, Some("FileList")),
-            KeyBinding::new("delete", RemoveSelected, Some("FileList")),
-            KeyBinding::new("escape", CloseSettings, Some("FileList")),
-            KeyBinding::new(open, OpenFiles, None),
-            KeyBinding::new(convert, Convert, None),
-            KeyBinding::new(settings, OpenSettings, None),
-            KeyBinding::new(quit, Quit, None),
-            KeyBinding::new(minimize, Minimize, None),
-            KeyBinding::new(fullscreen, ToggleFullscreen, None),
-        ]);
-        // Reached when focus is outside the view: still ask before dropping work or Undo.
-        cx.on_action(|_: &Quit, cx| {
-            let view = cx.try_global::<MainView>().and_then(|v| v.0.upgrade());
-            let window = cx.windows().first().copied();
-            if let (Some(view), Some(window)) = (view, window) {
-                let _ = window.update(cx, |_, window, cx| {
-                    view.update(cx, |app, cx| app.request_quit(window, cx))
-                });
-            } else {
-                cx.quit();
-            }
-        });
+    gpui_platform::application()
+        .with_assets(gpui_kit_assets::AllAssets)
+        .run(move |cx: &mut App| {
+            gpui_component::init(cx);
+            let [open, convert, settings, quit, minimize, fullscreen] = KEYS;
+            cx.bind_keys([
+                KeyBinding::new("up", SelectPrev, Some("FileList")),
+                KeyBinding::new("down", SelectNext, Some("FileList")),
+                KeyBinding::new("backspace", RemoveSelected, Some("FileList")),
+                KeyBinding::new("delete", RemoveSelected, Some("FileList")),
+                KeyBinding::new("escape", CloseSettings, Some("FileList")),
+                KeyBinding::new(open, OpenFiles, None),
+                KeyBinding::new(convert, Convert, None),
+                KeyBinding::new(settings, OpenSettings, None),
+                KeyBinding::new(quit, Quit, None),
+                KeyBinding::new(minimize, Minimize, None),
+                KeyBinding::new(fullscreen, ToggleFullscreen, None),
+            ]);
+            // Reached when focus is outside the view: still ask before dropping work or Undo.
+            cx.on_action(|_: &Quit, cx| {
+                let view = cx.try_global::<MainView>().and_then(|v| v.0.upgrade());
+                let window = cx.windows().first().copied();
+                if let (Some(view), Some(window)) = (view, window) {
+                    let _ = window.update(cx, |_, window, cx| {
+                        view.update(cx, |app, cx| app.request_quit(window, cx))
+                    });
+                } else {
+                    cx.quit();
+                }
+            });
 
-        let bounds = Bounds::centered(None, size(px(1080.), px(720.)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Fanhuaji".into()),
+            let bounds = Bounds::centered(None, size(px(1080.), px(720.)), cx);
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("Fanhuaji".into()),
+                        ..Default::default()
+                    }),
                     ..Default::default()
-                }),
-                ..Default::default()
-            },
-            |window, cx| {
-                let app = cx.new(|cx| {
-                    Fanhuaji::new(config.join("settings.json"), client, backups, window, cx)
-                });
-                // The locale is known now; set what depends on it.
-                window.set_window_title(&t("app.title"));
-                cx.set_menus(menus());
-                cx.set_global(MainView(app.downgrade()));
-                let handle = app.clone();
-                window.on_window_should_close(cx, move |window, cx| {
-                    handle.update(cx, |app, cx| app.request_quit(window, cx));
-                    false
-                });
-                cx.new(|cx| Root::new(app, window, cx))
-            },
-        )
-        .unwrap();
-        cx.activate(true);
-    });
+                },
+                |window, cx| {
+                    let app = cx.new(|cx| {
+                        Fanhuaji::new(config.join("settings.json"), client, backups, window, cx)
+                    });
+                    // The locale is known now; set what depends on it.
+                    window.set_window_title(&window_title());
+                    cx.set_menus(menus());
+                    cx.set_global(MainView(app.downgrade()));
+                    let handle = app.clone();
+                    window.on_window_should_close(cx, move |window, cx| {
+                        handle.update(cx, |app, cx| app.request_quit(window, cx));
+                        false
+                    });
+                    cx.new(|cx| Root::new(app, window, cx))
+                },
+            )
+            .unwrap();
+            cx.activate(true);
+        });
 }
 
 #[cfg(test)]

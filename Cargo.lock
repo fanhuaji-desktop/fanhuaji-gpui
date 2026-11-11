@@ -1536,6 +1536,7 @@ dependencies = [
  "dirs 7.0.0",
  "fanhuaji-core",
  "gpui-component",
+ "gpui-kit-assets",
  "gpui-pre",
  "gpui-pre-platform",
  "reqwest",
