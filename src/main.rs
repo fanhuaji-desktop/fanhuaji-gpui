@@ -3,6 +3,7 @@ mod i18n;
 mod queue;
 mod settings;
 mod theme;
+mod updater;
 
 use diff::Row;
 use fanhuaji_core::{
@@ -219,6 +220,10 @@ struct Fanhuaji {
     /// Files finished and total in the running batch, for the progress bar.
     batch: Option<(usize, usize)>,
     dark: bool,
+    /// The update section's status line.
+    update_status: String,
+    /// A newer release found by a check, shown as a chip in the top bar.
+    update: Option<updater::Release>,
     pre_replace: Entity<TextareaState>,
     post_replace: Entity<TextareaState>,
     protect_replace: Entity<TextareaState>,
@@ -348,6 +353,8 @@ impl Fanhuaji {
             armed: None,
             batch: None,
             dark: false,
+            update_status: String::new(),
+            update: None,
             pre_replace,
             post_replace,
             protect_replace,
@@ -355,7 +362,34 @@ impl Fanhuaji {
             _subscriptions: subscriptions,
         };
         app.apply_theme(window, cx);
+        app.check_updates(true, cx);
         app
+    }
+
+    /// `silent`: the startup check, which only speaks up when there is an update.
+    fn check_updates(&mut self, silent: bool, cx: &mut Context<Self>) {
+        if !silent {
+            self.update_status = t("update.checking");
+            cx.notify();
+        }
+        let client = self.client.clone();
+        let job = RT.spawn(async move { updater::check(&client, env!("CARGO_PKG_VERSION")).await });
+        cx.spawn(async move |this, cx| {
+            let result = job.await.map_err(|e| e.to_string()).and_then(|r| r);
+            let _ = this.update(cx, |app, cx| {
+                app.update_status = match &result {
+                    Ok(Some(r)) => tp("update.downloadAvailable", &[("version", &r.version)]),
+                    Ok(None) if !silent => t("update.upToDate"),
+                    Err(e) if !silent => tp("update.failed", &[("error", &translate_error(e))]),
+                    _ => String::new(),
+                };
+                if let Ok(Some(release)) = result {
+                    app.update = Some(release);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn pal(&self) -> &'static Pal {
@@ -886,27 +920,43 @@ impl Render for Fanhuaji {
                     }),
                 )
             }));
-        let top = div().flex().items_start().gap_3().child(converters).child(
-            button(
+        let update_chip = self.update.as_ref().map(|r| {
+            let url = r.url.clone();
+            chip(
                 p,
-                "settings",
-                t(if self.show_settings {
-                    "settings.close"
-                } else {
-                    "header.settings"
-                }),
-                false,
+                "update-chip",
+                tp("update.chip", &[("version", &r.version)]),
+                true,
             )
-            .on_click(cx.listener(|app, _, _, cx| {
-                if app.show_settings {
-                    app.show_settings = false;
-                    // Settings may have changed what the pending preview should show.
-                    app.refresh_preview(cx);
-                } else {
-                    app.open_settings(app.tab, cx);
-                }
-            })),
-        );
+            .on_click(move |_, _, cx| cx.open_url(&url))
+        });
+        let top = div()
+            .flex()
+            .items_start()
+            .gap_3()
+            .child(converters)
+            .children(update_chip)
+            .child(
+                button(
+                    p,
+                    "settings",
+                    t(if self.show_settings {
+                        "settings.close"
+                    } else {
+                        "header.settings"
+                    }),
+                    false,
+                )
+                .on_click(cx.listener(|app, _, _, cx| {
+                    if app.show_settings {
+                        app.show_settings = false;
+                        // Settings may have changed what the pending preview should show.
+                        app.refresh_preview(cx);
+                    } else {
+                        app.open_settings(app.tab, cx);
+                    }
+                })),
+            );
 
         div()
             .id("root")
@@ -1657,6 +1707,37 @@ impl Fanhuaji {
                             ))
                         }),
                     ),
+                ),
+            )
+            .child(
+                section(t("settings.update.title")).child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(
+                            button(p, "check-update", t("settings.update.check"), false).on_click(
+                                cx.listener(|app, _, _, cx| app.check_updates(false, cx)),
+                            ),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(rgb(p.muted))
+                                .child(self.update_status.clone()),
+                        )
+                        .when_some(self.update.as_ref(), |d, r| {
+                            let url = r.url.clone();
+                            d.child(
+                                div()
+                                    .id("release-link")
+                                    .text_sm()
+                                    .text_color(rgb(p.accent))
+                                    .cursor_pointer()
+                                    .child("GitHub Releases")
+                                    .on_click(move |_, _, cx| cx.open_url(&url)),
+                            )
+                        }),
                 ),
             )
             .child(

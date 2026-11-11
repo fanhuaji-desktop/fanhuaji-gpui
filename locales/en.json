@@ -224,5 +224,6 @@
   "preview.emptyTitle": "Select a file to preview",
   "preview.emptyHint": "Click a file on the left to see an \u201coriginal \u2192 converted\u201d comparison line by line",
   "status.filesUnit": "files",
-  "modules.loadFailed": "Couldn't load the module list: {error}"
+  "modules.loadFailed": "Couldn't load the module list: {error}",
+  "update.downloadAvailable": "New version {version} available. Download it from GitHub Releases."
 }
