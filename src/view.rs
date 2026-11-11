@@ -1155,6 +1155,15 @@ impl Fanhuaji {
                 div()
                     .id("drawer")
                     .occlude()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|app, _, _, cx| {
+                            if app.popover == Some(Popover::Language) {
+                                app.popover = None;
+                                cx.notify();
+                            }
+                        }),
+                    )
                     .w(px(360.))
                     .h_full()
                     .flex()
@@ -1327,27 +1336,65 @@ impl Fanhuaji {
             .child(div().flex().flex_col().children(rows))
     }
 
+    /// A full-width dropdown, as the Tauri app's language `<select>`.
+    fn render_language_select(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = self.pal();
+        let current = i18n::LOCALES
+            .iter()
+            .find(|(l, _)| *l == i18n::locale())
+            .map_or("", |(_, name)| name);
+        let border_strong = p.border_strong;
+        div()
+            .relative()
+            .child(
+                div()
+                    .id("locale-select")
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px(px(10.))
+                    .py(px(6.))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(c(if self.popover == Some(Popover::Language) {
+                        p.accent
+                    } else {
+                        p.border
+                    }))
+                    .bg(c(p.bg))
+                    .cursor_pointer()
+                    .hover(move |s| s.border_color(c(border_strong)))
+                    .child(current)
+                    .child(icon("chevron-down").size(px(14.)).text_color(c(p.muted)))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(
+                        cx.listener(|app, _, _, cx| app.toggle_popover(Popover::Language, cx)),
+                    ),
+            )
+            .when(self.popover == Some(Popover::Language), |d| {
+                let mut list = popover_panel(p, "locale-list").top(px(36.)).left_0();
+                for (locale, name) in i18n::LOCALES {
+                    list = list.child(
+                        pop_option(p, name, name.to_string(), None, i18n::locale() == locale)
+                            .on_click(cx.listener(move |app, _, window, cx| {
+                                app.popover = None;
+                                i18n::set_locale(locale);
+                                app.settings.locale = Some(locale);
+                                app.settings_changed(cx);
+                                app.apply_locale(window, cx);
+                            })),
+                    );
+                }
+                // Above the drawer, which is itself deferred.
+                d.child(deferred(list).with_priority(4))
+            })
+            .into_any_element()
+    }
+
     fn render_general(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let p = self.pal();
         let s = &self.settings;
-        let languages = segmented(
-            p,
-            i18n::LOCALES.map(|(locale, name)| {
-                (
-                    ElementId::from(name),
-                    None,
-                    name.to_string(),
-                    i18n::locale() == locale,
-                    Box::new(cx.listener(move |app, _, window, cx| {
-                        i18n::set_locale(locale);
-                        app.settings.locale = Some(locale);
-                        app.settings_changed(cx);
-                        app.apply_locale(window, cx);
-                    })) as Click,
-                )
-            }),
-            false,
-        );
+        let languages = self.render_language_select(cx);
         let themes = segmented(
             p,
             [
@@ -1437,7 +1484,7 @@ impl Fanhuaji {
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(6.))
+                            .gap(px(4.))
                             .child(format!(
                                 "{} {}",
                                 t("settings.about.version"),
@@ -1748,32 +1795,35 @@ fn segmented<const N: usize>(
     small: bool,
 ) -> impl IntoElement {
     let hover = p.hover;
-    div()
-        .flex()
-        .flex_none()
-        .rounded(px(6.))
-        .border_1()
-        .border_color(c(p.border))
-        .overflow_hidden()
-        .children(parts.into_iter().enumerate().map(
-            move |(i, (id, glyph, label, active, on_click))| {
-                div()
-                    .id(id)
-                    .flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .px(px(if small { 7. } else { 14. }))
-                    .py(px(if small { 3. } else { 6. }))
-                    .text_size(px(if small { 11. } else { 12. }))
-                    .when(i + 1 < N, |d| d.border_r_1().border_color(c(p.border)))
-                    .cursor_pointer()
-                    .when(active, |d| d.bg(c(p.accent)).text_color(c(p.on_accent)))
-                    .when(!active, |d| d.hover(move |s| s.bg(c(hover))))
-                    .when_some(glyph, |d, g| d.child(icon(g).size(px(14.))))
-                    .child(label)
-                    .on_click(on_click)
-            },
-        ))
+    // The outer row keeps the segment at its content width (`inline-flex` in the Tauri app).
+    div().flex().child(
+        div()
+            .flex()
+            .flex_none()
+            .rounded(px(6.))
+            .border_1()
+            .border_color(c(p.border))
+            .overflow_hidden()
+            .children(parts.into_iter().enumerate().map(
+                move |(i, (id, glyph, label, active, on_click))| {
+                    div()
+                        .id(id)
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .px(px(if small { 7. } else { 14. }))
+                        .py(px(if small { 3. } else { 6. }))
+                        .text_size(px(if small { 11. } else { 12. }))
+                        .when(i + 1 < N, |d| d.border_r_1().border_color(c(p.border)))
+                        .cursor_pointer()
+                        .when(active, |d| d.bg(c(p.accent)).text_color(c(p.on_accent)))
+                        .when(!active, |d| d.hover(move |s| s.bg(c(hover))))
+                        .when_some(glyph, |d, g| d.child(icon(g).size(px(14.))))
+                        .child(label)
+                        .on_click(on_click)
+                },
+            )),
+    )
 }
 
 fn marked_text(text: &str, ranges: &[Range<usize>], style: HighlightStyle) -> StyledText {

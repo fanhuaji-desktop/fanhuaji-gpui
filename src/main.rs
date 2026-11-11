@@ -196,6 +196,8 @@ impl gpui::Global for MainView {}
 enum Popover {
     Mode,
     Output,
+    /// The language picker in the settings drawer.
+    Language,
 }
 
 /// A destructive click waiting for its confirming second click, as in the Tauri app.
