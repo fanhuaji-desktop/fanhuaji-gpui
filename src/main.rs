@@ -933,6 +933,24 @@ fn menus() -> Vec<Menu> {
     ]
 }
 
+/// macOS reads a bundle's icon from Info.plist; a bare binary (`cargo run`) needs it set.
+#[cfg(target_os = "macos")]
+fn set_dock_icon() {
+    use objc2::{AllocAnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    static ICON: &[u8] = include_bytes!("../assets/icon.png");
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let data = NSData::with_bytes(ICON);
+    if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
+        // SAFETY: on the main thread (checked above) with a valid, retained NSImage.
+        unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image)) };
+    }
+}
+
 fn main() {
     let config = dirs::config_dir()
         .unwrap_or_else(std::env::temp_dir)
@@ -951,6 +969,8 @@ fn main() {
         .with_assets(gpui_kit_assets::AllAssets)
         .run(move |cx: &mut App| {
             gpui_component::init(cx);
+            #[cfg(target_os = "macos")]
+            set_dock_icon();
             let [open, convert, settings, quit, minimize, fullscreen] = KEYS;
             cx.bind_keys([
                 KeyBinding::new("up", SelectPrev, Some("FileList")),
