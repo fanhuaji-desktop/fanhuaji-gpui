@@ -36,7 +36,10 @@ actions!(
         About,
         Quit,
         Minimize,
-        ToggleFullscreen
+        ToggleFullscreen,
+        SelectPrev,
+        SelectNext,
+        RemoveSelected
     ]
 );
 
@@ -501,6 +504,40 @@ impl Fanhuaji {
         self.selected = Some(id);
         self.show_settings = false;
         self.refresh_preview(cx);
+    }
+
+    /// Move the selection up or down the list, as the arrow keys do in the Tauri app.
+    fn select_step(&mut self, down: bool, cx: &mut Context<Self>) {
+        let ids: Vec<FileId> = self.queue.files.iter().map(|f| f.id).collect();
+        let Some(&first) = ids.first() else {
+            return;
+        };
+        let next = match self
+            .selected
+            .and_then(|id| ids.iter().position(|&x| x == id))
+        {
+            Some(i) if down => ids[(i + 1).min(ids.len() - 1)],
+            Some(i) => ids[i.saturating_sub(1)],
+            None => first,
+        };
+        self.select(next, cx);
+    }
+
+    fn remove_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.selected else {
+            return;
+        };
+        if self
+            .queue
+            .get(id)
+            .is_some_and(|f| matches!(f.status, Status::Converting(_)))
+        {
+            return;
+        }
+        let undoable = Queue::undoable(self.queue.get(id));
+        self.confirm_undo_loss(Armed::Remove(id), undoable, cx, |app, _| {
+            app.queue.remove(id)
+        });
     }
 
     /// After files leave the list: drop the selection if its file is gone.
@@ -970,6 +1007,17 @@ impl Render for Fanhuaji {
             .on_action(cx.listener(|app, _: &Quit, window, cx| app.request_quit(window, cx)))
             .on_action(|_: &Minimize, window, _| window.minimize_window())
             .on_action(|_: &ToggleFullscreen, window, _| window.toggle_fullscreen())
+            // Text inputs have the deeper "Input" context, so arrows and delete stay theirs there.
+            .key_context("FileList")
+            .on_action(cx.listener(|app, _: &SelectPrev, _, cx| app.select_step(false, cx)))
+            .on_action(cx.listener(|app, _: &SelectNext, _, cx| app.select_step(true, cx)))
+            .on_action(cx.listener(|app, _: &RemoveSelected, _, cx| app.remove_selected(cx)))
+            // Files can be dropped anywhere in the window, as in the Tauri app.
+            .group("root")
+            .on_drop(cx.listener(|app, paths: &ExternalPaths, _, cx| {
+                app.add_paths(paths.paths(), cx);
+            }))
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -992,6 +1040,7 @@ impl Render for Fanhuaji {
                     }),
             )
             .child(self.render_status(cx))
+            .child(self.render_drop_overlay())
     }
 }
 
@@ -1036,6 +1085,40 @@ impl Fanhuaji {
         }
     }
 
+    /// Shown only while files are dragged over the window: says what dropping will do.
+    fn render_drop_overlay(&self) -> impl IntoElement {
+        let p = self.pal();
+        let mode = converter_label(&self.settings.converter);
+        let text = if !self.settings.auto_convert {
+            t("drop.release")
+        } else if self.settings.naming == Naming::Overwrite {
+            tp("drop.releaseOverwrite", &[("mode", &mode)])
+        } else {
+            tp("drop.releaseConvert", &[("mode", &mode)])
+        };
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .opacity(0.)
+            .group_drag_over::<ExternalPaths>("root", |s| s.opacity(1.))
+            .child(
+                div()
+                    .px_6()
+                    .py_4()
+                    .rounded_lg()
+                    .border_2()
+                    .border_dashed()
+                    .border_color(rgb(p.accent))
+                    .bg(rgb(p.surface))
+                    .text_lg()
+                    .text_color(rgb(p.accent))
+                    .child(text),
+            )
+    }
+
     fn render_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let p = self.pal();
         let (accent, drop) = (p.accent, p.drop);
@@ -1050,10 +1133,9 @@ impl Fanhuaji {
             .border_2()
             .border_dashed()
             .border_color(rgb(p.border))
-            .drag_over::<ExternalPaths>(move |s, _, _, _| s.border_color(rgb(accent)).bg(rgb(drop)))
-            .on_drop(cx.listener(|app, paths: &ExternalPaths, _, cx| {
-                app.add_paths(paths.paths(), cx);
-            }))
+            .group_drag_over::<ExternalPaths>("root", move |s| {
+                s.border_color(rgb(accent)).bg(rgb(drop))
+            })
             .when(self.queue.files.is_empty(), |d| {
                 d.items_center()
                     .justify_center()
@@ -1870,6 +1952,10 @@ fn main() {
         gpui_component::init(cx);
         let [open, convert, settings, quit, minimize, fullscreen] = KEYS;
         cx.bind_keys([
+            KeyBinding::new("up", SelectPrev, Some("FileList")),
+            KeyBinding::new("down", SelectNext, Some("FileList")),
+            KeyBinding::new("backspace", RemoveSelected, Some("FileList")),
+            KeyBinding::new("delete", RemoveSelected, Some("FileList")),
             KeyBinding::new(open, OpenFiles, None),
             KeyBinding::new(convert, Convert, None),
             KeyBinding::new(settings, OpenSettings, None),
