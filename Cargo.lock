@@ -1516,6 +1516,7 @@ dependencies = [
 [[package]]
 name = "fanhuaji-core"
 version = "0.1.0"
+source = "git+https://github.com/fanhuaji-desktop/fanhuaji-tauri?branch=refactor%2Fextract-core#a61d3cdc067166d70ef49eec4224215efc18216c"
 dependencies = [
  "chardetng",
  "encoding_rs",
