@@ -7,7 +7,14 @@ publish = false
 [dependencies]
 # shortcut: local path to the Tauri repo's core crate (PR #74); switch to a git dependency once it is merged.
 fanhuaji-core = { path = "../fanhuaji-tauri/src-tauri/core" }
+# gpui-pre: Zed gpui snapshots that gpui-component tracks (crates.io `gpui` stopped at 0.2.2).
+# Pinned exactly because gpui-component pins them too.
+gpui = { package = "gpui-pre", version = "=0.3.12" }
 # runtime_shaders: compiles Metal shaders at launch, so building does not need full Xcode.
-gpui = { version = "0.2.2", features = ["runtime_shaders"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["runtime_shaders"] }
+gpui-component = "=0.9.1"
 reqwest = { version = "0.13", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+dirs = "7.0.0"

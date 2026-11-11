@@ -2,6 +2,7 @@
 //! flags only change through `begin`/`stop`/`end`, so how a stopped batch and a
 //! single-file Reconvert interact is decided here.
 
+use crate::settings::OutputKey;
 use fanhuaji_core::PreviewResult;
 use std::path::PathBuf;
 
@@ -14,14 +15,18 @@ pub enum Status {
     Done(String),
     Warning(String),
     Failed(String),
+    /// Overwritten, then put back with Undo.
+    Restored,
 }
 
 pub struct FileItem {
     pub id: FileId,
     pub path: PathBuf,
     pub status: Status,
-    /// What the finished conversion wrote, and with which converter.
-    pub saved: Option<(PreviewResult, &'static str)>,
+    /// What the finished conversion wrote, and with which output settings.
+    pub saved: Option<(PreviewResult, OutputKey)>,
+    /// Overwrote its input; a backup exists for Undo.
+    pub overwritten: bool,
 }
 
 impl FileItem {
@@ -49,7 +54,6 @@ impl Queue {
     pub fn stop_requested(&self) -> bool {
         self.stop_requested
     }
-    #[allow(dead_code)] // shortcut: read by the auto-convert setting, not ported yet.
     pub fn stopped(&self) -> bool {
         self.stopped
     }
@@ -65,6 +69,7 @@ impl Queue {
             path,
             status: Status::Pending,
             saved: None,
+            overwritten: false,
         });
         true
     }
@@ -112,7 +117,6 @@ impl Queue {
     }
 
     /// Files added mid-batch still wait; a stopped batch leaves them pending on purpose.
-    #[allow(dead_code)] // shortcut: read by the auto-convert setting, not ported yet.
     pub fn should_resume(&self, auto_convert: bool) -> bool {
         !self.stopped && auto_convert && self.files.iter().any(|f| f.status == Status::Pending)
     }
@@ -126,9 +130,10 @@ impl Queue {
         }
     }
 
-    /// Drop finished files, keeping pending, running and failed ones.
+    /// Drop finished (converted or restored) files, keeping pending, running and failed ones.
     pub fn remove_completed(&mut self) {
-        self.files.retain(|f| !f.is_finished());
+        self.files
+            .retain(|f| !f.is_finished() && f.status != Status::Restored);
     }
 
     /// Remove one file; the file being converted stays.
@@ -156,6 +161,7 @@ mod tests {
                 Status::Done(x) => Status::Done(x.clone()),
                 Status::Warning(x) => Status::Warning(x.clone()),
                 Status::Failed(x) => Status::Failed(x.clone()),
+                Status::Restored => Status::Restored,
             };
         }
         (q, ids)
@@ -260,6 +266,14 @@ mod tests {
         q.remove_completed();
         let left: Vec<FileId> = q.files.iter().map(|f| f.id).collect();
         assert_eq!(left, [ids[0], ids[3], ids[4]]);
+    }
+
+    #[test]
+    fn remove_completed_also_drops_restored_files() {
+        let (mut q, ids) = queue(&[Status::Restored, Status::Pending]);
+        q.remove_completed();
+        assert_eq!(q.files.len(), 1);
+        assert_eq!(q.files[0].id, ids[1]);
     }
 
     #[test]
