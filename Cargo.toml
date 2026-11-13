@@ -5,11 +5,10 @@ edition = "2024"
 publish = false
 
 [dependencies]
-# shortcut: tracks the PR #74 branch of the Tauri repo; switch to `branch = "main"` once it merges.
 # To work on core locally, add to .cargo/config.toml (not committed):
 #   [patch."https://github.com/fanhuaji-desktop/fanhuaji-tauri"]
 #   fanhuaji-core = { path = "../fanhuaji-tauri/src-tauri/core" }
-fanhuaji-core = { git = "https://github.com/fanhuaji-desktop/fanhuaji-tauri", branch = "refactor/extract-core" }
+fanhuaji-core = { git = "https://github.com/fanhuaji-desktop/fanhuaji-tauri", branch = "main" }
 # gpui-pre: Zed gpui snapshots that gpui-component tracks (crates.io `gpui` stopped at 0.2.2).
 # Pinned exactly because gpui-component pins them too.
 gpui = { package = "gpui-pre", version = "=0.3.12" }
